@@ -24,11 +24,7 @@ MARKITDOWN_EXTENSIONS = {
     ".mkv", ".webm", ".zip",
 }
 
-SCHEMA_FILES = {
-    "AGENTS.md": _agents_md,
-    "wiki_schema.md": _wiki_schema_md,
-    "page_conventions.md": _page_conventions_md,
-}
+SCHEMA_FILENAMES = ["AGENTS.md", "wiki_schema.md", "page_conventions.md"]
 
 
 def slugify(text: str) -> str:
@@ -153,17 +149,14 @@ class Vault:
 
         # Write schema docs
         schema_src = schema_source or (Path(__file__).parent.parent / "sample_vault" / "schema")
-        for filename, content_fn in [
-            ("AGENTS.md", _agents_md),
-            ("wiki_schema.md", _wiki_schema_md),
-            ("page_conventions.md", _page_conventions_md),
-        ]:
+        for filename in SCHEMA_FILENAMES:
             dest = self.schema / filename
             if not dest.exists():
-                if schema_src.exists() and (schema_src / filename).exists():
-                    shutil.copy2(schema_src / filename, dest)
+                src_file = schema_src / filename if schema_src.exists() else None
+                if src_file and src_file.exists():
+                    shutil.copy2(src_file, dest)
                 else:
-                    dest.write_text(content_fn(), encoding="utf-8")
+                    dest.write_text(f"# {filename}\n\n_Schema doc not found. See sample_vault/schema/ for templates._\n", encoding="utf-8")
 
     # ------------------------------------------------------------------ #
     #  Raw source management
@@ -380,17 +373,3 @@ def _upsert_index_entry(content: str, section_header: str, link_key: str, new_li
     return "\n".join(lines)
 
 
-# ------------------------------------------------------------------ #
-#  Default schema doc content
-# ------------------------------------------------------------------ #
-
-def _agents_md() -> str:
-    return (Path(__file__).parent.parent / "sample_vault" / "schema" / "AGENTS.md").read_text(encoding="utf-8")
-
-
-def _wiki_schema_md() -> str:
-    return (Path(__file__).parent.parent / "sample_vault" / "schema" / "wiki_schema.md").read_text(encoding="utf-8")
-
-
-def _page_conventions_md() -> str:
-    return (Path(__file__).parent.parent / "sample_vault" / "schema" / "page_conventions.md").read_text(encoding="utf-8")

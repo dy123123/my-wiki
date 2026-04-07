@@ -1,0 +1,67 @@
+LLM SCALING LAWS — MOCK SUMMARY
+================================
+
+Title: Scaling Laws for Neural Language Models
+Authors: Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B. Brown, Benjamin Chess, Ramesh Neelakantan, Aditya Ramesh, Alec Radford, Ilya Sutskever, Dario Amodei
+Institution: OpenAI
+Published: 2020-01-23
+
+OVERVIEW
+--------
+We study empirical scaling laws for language model performance on the cross-entropy loss. The loss scales as a power-law with model size, dataset size, and the amount of compute used for training, with some trends spanning more than seven orders of magnitude.
+
+KEY FINDINGS
+------------
+
+1. PERFORMANCE SCALES PREDICTABLY
+   Language model performance improves smoothly and predictably as a function of:
+   - Number of model parameters (N)
+   - Size of the dataset (D, in tokens)
+   - Amount of compute (C, in FLOP)
+
+2. POWER LAW RELATIONSHIPS
+   Loss ∝ N^(-0.076)  [with sufficient data]
+   Loss ∝ D^(-0.095)  [with sufficient model]
+   Loss ∝ C^(-0.050)  [optimal allocation]
+
+3. COMPUTE-OPTIMAL TRAINING
+   For a given compute budget, there is an optimal allocation between model size and training tokens. Larger models trained on less data are often more efficient than smaller models trained longer.
+
+4. SAMPLE EFFICIENCY
+   Larger models are more sample efficient — they achieve lower loss with fewer tokens than smaller models.
+
+5. TRANSFER LEARNING
+   Performance on downstream tasks correlates with pre-training loss, suggesting that scaling improves general capabilities.
+
+IMPLICATIONS
+-----------
+- Bigger is generally better, given sufficient compute
+- Data and model size should scale together
+- These laws have held up across model sizes from 10M to 100B+ parameters
+- GPT-3, PaLM, and other large models validated these predictions
+
+PRACTICAL GUIDANCE
+------------------
+For a fixed compute budget C (in FLOP):
+  Optimal model size: N_opt ∝ C^0.73
+  Optimal tokens: D_opt ∝ C^0.27
+
+This means doubling compute should go mostly to increasing model size (~73%) and some to more data (~27%).
+
+ORGANIZATIONS MENTIONED
+-----------------------
+- OpenAI — publisher of the research
+- DeepMind — referenced for comparison
+- Google Brain — related work on scaling
+
+KEY CONCEPTS
+-----------
+- Neural scaling laws
+- Power-law relationships
+- Cross-entropy loss
+- Compute budget (FLOPs)
+- Sample efficiency
+- Transfer learning
+- Pre-training
+
+NOTE: This is a mock/simplified summary for demonstration purposes.
