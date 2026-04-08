@@ -74,6 +74,9 @@ def _normalize_one(meta: SourceMeta, vault: Vault, dry_run: bool) -> None:
 
 def _convert(raw_path: Path, ext: str) -> str:
     """Convert a raw file to markdown text."""
+    if ext == ".pdf":
+        return _convert_pdf(raw_path)
+
     if ext in MARKITDOWN_EXTENSIONS:
         try:
             from markitdown import MarkItDown  # type: ignore[import]
@@ -82,26 +85,12 @@ def _convert(raw_path: Path, ext: str) -> str:
             result = md.convert(str(raw_path))
             text = result.text_content
             if text and text.strip():
-                # If PDF text looks garbled (font glyph mapping failure), try fallback
-                if ext == ".pdf" and _is_garbled(text):
-                    fallback = _pdf_fallback(raw_path)
-                    if fallback and not _is_garbled(fallback):
-                        console.print(
-                            "[yellow]markitdown produced garbled text, used pypdf fallback.[/yellow]"
-                        )
-                        return fallback
                 return text
             # Fall through if empty result
         except ImportError:
             console.print("[yellow]markitdown not installed, falling back to plain text.[/yellow]")
         except Exception as e:
             console.print(f"[yellow]markitdown failed ({e}), falling back to plain text.[/yellow]")
-
-    # For PDFs without markitdown, try pypdf directly
-    if ext == ".pdf":
-        fallback = _pdf_fallback(raw_path)
-        if fallback:
-            return fallback
 
     # Plain text fallback
     if ext in {".md", ".txt", ".rst", ".text"}:
@@ -114,9 +103,55 @@ def _convert(raw_path: Path, ext: str) -> str:
         return f"[Binary file — could not extract text: {raw_path.name}]\n"
 
 
+def _convert_pdf(raw_path: Path) -> str:
+    """Extract text from a PDF, trying markitdown then pypdf as fallback."""
+    markitdown_text: str | None = None
+
+    # Try markitdown first
+    try:
+        from markitdown import MarkItDown  # type: ignore[import]
+
+        md = MarkItDown()
+        result = md.convert(str(raw_path))
+        text = result.text_content
+        if text and text.strip() and not _looks_like_raw_pdf(text):
+            if not _is_garbled(text):
+                return text
+            markitdown_text = text  # keep as fallback if pypdf also fails
+    except ImportError:
+        pass
+    except Exception as e:
+        console.print(f"[yellow]markitdown failed ({e}), trying pypdf.[/yellow]")
+
+    # Try pypdf
+    pypdf_text = _pdf_fallback(raw_path)
+    if pypdf_text and pypdf_text.strip():
+        if markitdown_text and not _is_garbled(markitdown_text):
+            # markitdown had content but was garbled; pypdf may be better
+            if not _is_garbled(pypdf_text):
+                console.print("[yellow]markitdown produced garbled text, used pypdf fallback.[/yellow]")
+                return pypdf_text
+        else:
+            return pypdf_text
+
+    # If markitdown had usable (even if slightly garbled) text, prefer it over nothing
+    if markitdown_text and markitdown_text.strip():
+        return markitdown_text
+
+    return f"[PDF text extraction failed — install markitdown or pypdf: {raw_path.name}]\n"
+
+
+def _looks_like_raw_pdf(text: str) -> bool:
+    """Return True if text is raw PDF binary structure rather than extracted content."""
+    stripped = text.lstrip()
+    return stripped.startswith("%PDF-")
+
+
 def _is_garbled(text: str) -> bool:
     """Return True if text looks like a font glyph mapping failure."""
     import re
+    if _looks_like_raw_pdf(text):
+        return True
     cid_count = len(re.findall(r"\(cid:\d+\)", text))
     total_words = max(len(text.split()), 1)
     # Garbled if more than 10% of "words" are (cid:xxx) tokens
