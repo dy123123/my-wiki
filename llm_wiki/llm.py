@@ -24,11 +24,19 @@ class LLMClient:
         self._client = OpenAI(
             base_url=settings.llm_base_url,
             api_key=settings.llm_api_key or "no-key-set",
-            timeout=120.0,
+            timeout=settings.llm_timeout,
         )
         self.model = settings.llm_model
         self.temperature = settings.llm_temperature
         self.max_tokens = settings.llm_max_tokens
+
+        # Ollama extra options (num_gpu, num_ctx) — ignored by non-Ollama backends
+        _ollama_opts: dict = {}
+        if settings.llm_num_gpu > 0:
+            _ollama_opts["num_gpu"] = settings.llm_num_gpu
+        if settings.llm_num_ctx > 0:
+            _ollama_opts["num_ctx"] = settings.llm_num_ctx
+        self._extra_body = {"options": _ollama_opts} if _ollama_opts else None
 
     # ------------------------------------------------------------------ #
     #  Core completion
@@ -51,6 +59,8 @@ class LLMClient:
         }
         if response_format:
             kwargs["response_format"] = response_format
+        if self._extra_body:
+            kwargs["extra_body"] = self._extra_body
 
         last_err: Exception | None = None
         for attempt in range(max_retries):

@@ -41,6 +41,22 @@ class Settings(BaseSettings):
         gt=0,
         description="Maximum tokens per completion",
     )
+    # Ollama-specific options (ignored by other backends)
+    llm_num_gpu: int = Field(
+        default=0,
+        ge=0,
+        description="Ollama: number of GPU layers (0 = all available)",
+    )
+    llm_num_ctx: int = Field(
+        default=0,
+        ge=0,
+        description="Ollama: context window size (0 = model default)",
+    )
+    llm_timeout: float = Field(
+        default=120.0,
+        gt=0,
+        description="HTTP timeout in seconds for LLM requests",
+    )
 
     # Vault
     vault_path: Path = Field(
@@ -68,6 +84,16 @@ class Settings(BaseSettings):
     rerank_base_url: str = Field(
         default="",
         description="Reranker API base URL (empty = use embed_base_url)",
+    )
+    embed_batch_size: int = Field(
+        default=32,
+        gt=0,
+        description="Number of chunks to embed per API call (lower = less VRAM)",
+    )
+    embed_num_gpu: int = Field(
+        default=0,
+        ge=0,
+        description="Ollama: GPU layers for embedding model (0 = all available)",
     )
     chunk_size: int = Field(
         default=800,

@@ -29,6 +29,13 @@ class EmbedClient:
 
         self._embed_model = settings.embed_model
         self._rerank_model = settings.rerank_model
+        self._batch_size = settings.embed_batch_size
+
+        # Ollama GPU option for embedding model
+        _embed_opts: dict = {}
+        if settings.embed_num_gpu > 0:
+            _embed_opts["num_gpu"] = settings.embed_num_gpu
+        self._embed_extra_body = {"options": _embed_opts} if _embed_opts else None
         self._rerank_base_url = (
             settings.rerank_base_url
             or settings.embed_base_url
@@ -51,10 +58,10 @@ class EmbedClient:
         if not texts:
             return []
         try:
-            resp = self._client.embeddings.create(
-                model=self._embed_model,
-                input=texts,
-            )
+            kwargs: dict = {"model": self._embed_model, "input": texts}
+            if self._embed_extra_body:
+                kwargs["extra_body"] = self._embed_extra_body
+            resp = self._client.embeddings.create(**kwargs)
             # Sort by index to preserve order
             ordered = sorted(resp.data, key=lambda x: x.index)
             return [item.embedding for item in ordered]

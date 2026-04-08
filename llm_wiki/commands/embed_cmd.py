@@ -89,8 +89,7 @@ def _embed_one(
         console.print(f"  [dim]DRY RUN — would embed {len(chunks)} chunks[/dim]")
         return
 
-    # Embed in batches of 32
-    batch_size = 32
+    batch_size = embedder._batch_size
     all_embeddings: list[list[float]] = []
 
     with Progress(
