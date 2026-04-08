@@ -13,6 +13,10 @@ console = Console()
 
 
 def run(path: Path, vault: Vault, tags: list[str], dry_run: bool) -> None:
+    if not vault.exists():
+        console.print("[red]Error:[/red] Vault not initialized. Run `llm-wiki init` first.")
+        raise SystemExit(1)
+
     if not path.exists():
         console.print(f"[red]Error:[/red] File not found: {path}")
         raise SystemExit(1)
