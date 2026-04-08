@@ -1,7 +1,9 @@
 """Configuration management via pydantic-settings."""
 
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -58,7 +60,7 @@ class Settings(BaseSettings):
 
     @field_validator("vault_path", mode="before")
     @classmethod
-    def resolve_vault_path(cls, v: str | Path) -> Path:
+    def resolve_vault_path(cls, v: Union[str, Path]) -> Path:
         return Path(v)
 
     def is_llm_configured(self) -> bool:

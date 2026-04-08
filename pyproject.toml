@@ -7,25 +7,42 @@ name = "llm-wiki"
 version = "0.1.0"
 description = "An LLM-maintained local markdown wiki"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 license = { text = "MIT" }
+# Core install is intentionally lightweight — markitdown is optional
 dependencies = [
-    "typer[all]>=0.12.0",
+    "typer>=0.12.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "openai>=1.0.0",
-    "markitdown[all]>=0.1.0",
     "rich>=13.0.0",
+    "click>=8.0.0",
 ]
 
 [project.scripts]
 llm-wiki = "llm_wiki.cli:app"
 
 [project.optional-dependencies]
+# Basic normalization: text, HTML, CSV, XML
+normalize = [
+    "markitdown>=0.1.0",
+]
+# Full normalization: + PDF, Office docs, images, audio
+normalize-full = [
+    "markitdown[all]>=0.1.0",
+]
+# Local API server for Obsidian integration
 serve = [
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
 ]
+# Install everything
+all = [
+    "markitdown[all]>=0.1.0",
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
+]
+# Development and testing
 dev = [
     "pytest>=8.0.0",
     "pytest-mock>=3.12.0",

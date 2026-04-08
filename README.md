@@ -20,35 +20,56 @@ Inspired by Andrej Karpathy's LLM Wiki pattern.
 ## Installation
 
 ```bash
-pip install -e ".[dev]"         # development + tests
-pip install -e ".[serve]"       # + API server (FastAPI + uvicorn)
-pip install -e ".[serve,dev]"   # everything
-# or
+# Minimal install (no markitdown — plain text sources only)
 pip install .
+
+# Recommended: basic normalization (text, HTML, CSV, XML)
+pip install ".[normalize]"
+
+# Full normalization: + PDF, Word, Excel, PowerPoint, images, audio
+pip install ".[normalize-full]"
+
+# With API server for Obsidian
+pip install ".[normalize,serve]"
+
+# Everything
+pip install ".[all]"
+
+# Development
+pip install -e ".[normalize,serve,dev]"
 ```
 
-**Requirements:** Python 3.11+
+**Requirements:** Python 3.10+
+
+> **Why is markitdown optional?** `markitdown[all]` pulls in heavy ML libraries
+> (speech recognition, Azure cognitive services, image processing) that take a long
+> time to install. The core tool works fine without it — only the `normalize` command
+> needs it, and plain `.txt`/`.md` files are handled natively.
 
 ## Quick Start
 
 ```bash
-# 1. Copy and fill in your API key
+# 1. Install (with normalization support)
+pip install ".[normalize]"      # basic
+pip install ".[normalize-full]" # + PDF, Office, images, audio
+
+# 2. Copy and fill in your API key
 cp .env.example .env
 $EDITOR .env
 
-# 2. Initialize a vault in ./vault/
+# 3. Initialize a vault in ./vault/
 llm-wiki init
 
-# 3. Verify LLM connectivity
+# 4. Verify LLM connectivity
 llm-wiki llm ping
 
-# 4. Add a source document
+# 5. Add a source document
 llm-wiki add path/to/paper.pdf --tag ai --tag nlp
 
-# 5. Convert to markdown
+# 6. Convert to markdown
 llm-wiki normalize <source-id>
 
-# 6. Analyze and build wiki pages
+# 7. Analyze and build wiki pages
 llm-wiki ingest <source-id>
 
 # 7. Ask questions

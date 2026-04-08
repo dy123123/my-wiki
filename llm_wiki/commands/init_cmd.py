@@ -1,5 +1,7 @@
 """llm-wiki init — initialize a new vault."""
 
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Optional
 
