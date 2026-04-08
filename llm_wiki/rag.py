@@ -1,8 +1,11 @@
-"""RAG index — chunk storage, embedding storage, retrieval."""
+"""RAG index — chunk storage, embedding storage, hybrid retrieval."""
 
 from __future__ import annotations
 
 import json
+import math
+import re
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -64,6 +67,66 @@ def _np_cosine_sim(query_vec, matrix):
     return normed @ q  # (N,)
 
 
+_STOP = {
+    "a","an","the","is","it","in","on","at","to","for","of","and","or","but",
+    "not","be","was","are","with","this","that","what","how","why","when",
+    "where","who","which","can","do","does","did","has","have","had","will",
+    "would","could","should","may","might","i","we","you","they","he","she",
+}
+
+
+def _tokenize(text: str) -> list[str]:
+    return [t for t in re.findall(r"[a-z0-9_]+", text.lower()) if t not in _STOP]
+
+
+def _bm25_scores(query_tokens: list[str], chunks: list[str], k1: float = 1.5, b: float = 0.75) -> list[float]:
+    """
+    Lightweight BM25 scoring — no external dependency.
+    Works well for exact register names, hex addresses, flag names.
+    """
+    if not query_tokens or not chunks:
+        return [0.0] * len(chunks)
+
+    # Corpus stats
+    avgdl = sum(len(_tokenize(c)) for c in chunks) / max(len(chunks), 1)
+    df: dict[str, int] = defaultdict(int)
+    tokenized_chunks = [_tokenize(c) for c in chunks]
+    for tokens in tokenized_chunks:
+        for term in set(tokens):
+            df[term] += 1
+
+    N = len(chunks)
+    scores = []
+    for doc_tokens in tokenized_chunks:
+        dl = len(doc_tokens)
+        tf_map: dict[str, int] = defaultdict(int)
+        for t in doc_tokens:
+            tf_map[t] += 1
+        score = 0.0
+        for term in query_tokens:
+            if term not in df:
+                continue
+            idf = math.log((N - df[term] + 0.5) / (df[term] + 0.5) + 1)
+            tf = tf_map[term]
+            bm25_tf = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / max(avgdl, 1)))
+            score += idf * bm25_tf
+        scores.append(score)
+    return scores
+
+
+def _rrf_fuse(ranked_lists: list[list[int]], k: int = 60) -> list[float]:
+    """
+    Reciprocal Rank Fusion: combine multiple ranked lists of indices.
+    Returns fused scores indexed by original position.
+    """
+    n = max(max(lst) for lst in ranked_lists if lst) + 1
+    scores = [0.0] * n
+    for ranked in ranked_lists:
+        for rank, idx in enumerate(ranked):
+            scores[idx] += 1.0 / (k + rank + 1)
+    return scores
+
+
 class RagIndex:
     """
     Manages chunk and embedding storage for RAG retrieval.
@@ -121,20 +184,26 @@ class RagIndex:
     def search(
         self,
         query_embedding: list[float],
+        query_text: str = "",
         top_k: int = 5,
         source_ids: list[str] | None = None,
     ) -> list[ChunkResult]:
         """
-        Score all indexed chunks by cosine similarity using vectorized numpy ops.
-        Returns top_k results sorted by score descending.
+        Hybrid search: Reciprocal Rank Fusion of embedding similarity + BM25.
+
+        - Embedding similarity captures semantic relevance
+        - BM25 captures exact term matches (register names, hex addresses, flag names)
+        - RRF combines both ranked lists without calibrating weights
+
+        Returns top_k results sorted by fused score descending.
         """
         import numpy as np
 
         sources = source_ids or self.indexed_sources()
-        all_scores: list[float] = []
         all_source_ids: list[str] = []
         all_chunk_idxs: list[int] = []
-        chunk_texts: list[str] = []
+        all_chunk_texts: list[str] = []
+        embed_scores: list[float] = []
 
         for source_id in sources:
             matrix = self.load_embeddings_np(source_id)
@@ -144,27 +213,43 @@ class RagIndex:
             if len(chunks) != len(matrix):
                 continue
 
-            scores = _np_cosine_sim(query_embedding, matrix)  # (N,)
-            all_scores.extend(scores.tolist())
+            sims = _np_cosine_sim(query_embedding, matrix).tolist()
+            embed_scores.extend(sims)
             all_source_ids.extend([source_id] * len(chunks))
             all_chunk_idxs.extend(range(len(chunks)))
-            chunk_texts.extend(chunks)
+            all_chunk_texts.extend(chunks)
 
-        if not all_scores:
+        if not all_chunk_texts:
             return []
 
-        # Get top_k indices
-        arr = np.array(all_scores, dtype=np.float32)
-        top_k = min(top_k, len(arr))
-        top_indices = np.argpartition(arr, -top_k)[-top_k:]
-        top_indices = top_indices[np.argsort(arr[top_indices])[::-1]]
+        n = len(all_chunk_texts)
+        top_k = min(top_k, n)
+
+        # Embedding rank
+        embed_arr = np.array(embed_scores, dtype=np.float32)
+        embed_ranked = np.argsort(embed_arr)[::-1].tolist()
+
+        # BM25 rank (keyword matching — crucial for register names / hex addresses)
+        query_tokens = _tokenize(query_text) if query_text else []
+        if query_tokens:
+            bm25 = _bm25_scores(query_tokens, all_chunk_texts)
+            bm25_arr = np.array(bm25, dtype=np.float32)
+            bm25_ranked = np.argsort(bm25_arr)[::-1].tolist()
+            ranked_lists = [embed_ranked, bm25_ranked]
+        else:
+            ranked_lists = [embed_ranked]
+
+        # RRF fusion
+        fused = _rrf_fuse(ranked_lists)
+        fused_arr = np.array(fused, dtype=np.float32)
+        top_indices = np.argsort(fused_arr)[::-1][:top_k]
 
         return [
             ChunkResult(
                 source_id=all_source_ids[i],
                 chunk_idx=all_chunk_idxs[i],
-                score=float(all_scores[i]),
-                text=chunk_texts[i],
+                score=float(fused[i]),
+                text=all_chunk_texts[i],
             )
             for i in top_indices
         ]

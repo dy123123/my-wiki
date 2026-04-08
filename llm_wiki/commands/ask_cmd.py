@@ -53,7 +53,11 @@ def run(
                 q_embeddings = embedder.embed([question])
                 if q_embeddings:
                     settings = embedder._settings
-                    candidates = rag.search(q_embeddings[0], top_k=MAX_CHUNKS * 4)
+                    candidates = rag.search(
+                        q_embeddings[0],
+                        query_text=question,
+                        top_k=MAX_CHUNKS * 8,  # wider net before rerank
+                    )
                     rag_chunks = rag.rerank_and_trim(
                         question, candidates, embedder, top_k=MAX_CHUNKS
                     )
