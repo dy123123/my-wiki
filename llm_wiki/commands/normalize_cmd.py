@@ -106,6 +106,7 @@ def _convert(raw_path: Path, ext: str) -> str:
 def _convert_pdf(raw_path: Path) -> str:
     """Extract text from a PDF, trying markitdown then pypdf as fallback."""
     markitdown_text: str | None = None
+    reasons: list[str] = []
 
     # Try markitdown first
     try:
@@ -118,27 +119,45 @@ def _convert_pdf(raw_path: Path) -> str:
             if not _is_garbled(text):
                 return text
             markitdown_text = text  # keep as fallback if pypdf also fails
+            reasons.append("markitdown: garbled font encoding")
+        else:
+            reasons.append("markitdown: empty or raw PDF output")
     except ImportError:
-        pass
+        reasons.append("markitdown: not installed")
     except Exception as e:
-        console.print(f"[yellow]markitdown failed ({e}), trying pypdf.[/yellow]")
+        reasons.append(f"markitdown: {e}")
 
     # Try pypdf
-    pypdf_text = _pdf_fallback(raw_path)
-    if pypdf_text and pypdf_text.strip():
-        if markitdown_text and not _is_garbled(markitdown_text):
-            # markitdown had content but was garbled; pypdf may be better
-            if not _is_garbled(pypdf_text):
+    try:
+        import pypdf  # type: ignore[import]
+
+        reader = pypdf.PdfReader(str(raw_path))
+        pages = []
+        for page in reader.pages:
+            page_text = page.extract_text() or ""
+            if page_text.strip():
+                pages.append(page_text)
+        pypdf_text = "\n\n".join(pages) if pages else None
+
+        if pypdf_text and pypdf_text.strip():
+            if markitdown_text and not _is_garbled(pypdf_text):
                 console.print("[yellow]markitdown produced garbled text, used pypdf fallback.[/yellow]")
-                return pypdf_text
-        else:
             return pypdf_text
+        else:
+            reasons.append("pypdf: extracted empty text (may be a scanned/image PDF)")
+    except ImportError:
+        reasons.append("pypdf: not installed — run: pip install pypdf")
+    except Exception as e:
+        reasons.append(f"pypdf: {e}")
 
     # If markitdown had usable (even if slightly garbled) text, prefer it over nothing
     if markitdown_text and markitdown_text.strip():
+        console.print("[yellow]PDF extraction degraded — returning garbled text.[/yellow]")
         return markitdown_text
 
-    return f"[PDF text extraction failed — install markitdown or pypdf: {raw_path.name}]\n"
+    reason_str = "; ".join(reasons)
+    console.print(f"[red]PDF extraction failed:[/red] {reason_str}")
+    return f"[PDF text extraction failed ({reason_str}): {raw_path.name}]\n"
 
 
 def _looks_like_raw_pdf(text: str) -> bool:
@@ -158,19 +177,3 @@ def _is_garbled(text: str) -> bool:
     return cid_count / total_words > 0.1
 
 
-def _pdf_fallback(raw_path: Path) -> str | None:
-    """Try extracting PDF text with pypdf as fallback."""
-    try:
-        import pypdf  # type: ignore[import]
-
-        reader = pypdf.PdfReader(str(raw_path))
-        pages = []
-        for page in reader.pages:
-            page_text = page.extract_text() or ""
-            if page_text.strip():
-                pages.append(page_text)
-        return "\n\n".join(pages) if pages else None
-    except ImportError:
-        return None
-    except Exception:
-        return None
