@@ -29,6 +29,9 @@ class LLMClient:
         self.model = settings.llm_model
         self.temperature = settings.llm_temperature
         self.max_tokens = settings.llm_max_tokens
+        # Some models (o1, o3, o4-mini) require max_completion_tokens instead of max_tokens.
+        # This flag is set to True on the first 400 error about the parameter name.
+        self._use_max_completion_tokens: bool = False
 
         # Ollama extra options (num_gpu, num_ctx) — ignored by non-Ollama backends
         _ollama_opts: dict = {}
@@ -51,12 +54,16 @@ class LLMClient:
         response_format: Optional[dict] = None,
         max_retries: int = 3,
     ) -> str:
+        tokens = max_tokens if max_tokens is not None else self.max_tokens
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "temperature": temperature if temperature is not None else self.temperature,
-            "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
         }
+        if self._use_max_completion_tokens:
+            kwargs["max_completion_tokens"] = tokens
+        else:
+            kwargs["max_tokens"] = tokens
         if response_format:
             kwargs["response_format"] = response_format
         if self._extra_body:
@@ -76,6 +83,18 @@ class LLMClient:
                     f"Cannot reach LLM at {self._settings.llm_base_url}: {e}"
                 ) from e
             except APIStatusError as e:
+                # Some models (o1, o3, o4-mini) require max_completion_tokens
+                if (
+                    e.status_code == 400
+                    and "max_tokens" in str(e.message)
+                    and "max_completion_tokens" in str(e.message)
+                    and not self._use_max_completion_tokens
+                ):
+                    self._use_max_completion_tokens = True
+                    kwargs.pop("max_tokens", None)
+                    kwargs["max_completion_tokens"] = tokens
+                    last_err = e
+                    continue
                 if e.status_code in (500, 502, 503) and attempt < max_retries - 1:
                     time.sleep(2 ** attempt)
                     last_err = e
@@ -119,11 +138,16 @@ class LLMClient:
     def ping(self) -> tuple[bool, str]:
         """Return (success, message)."""
         try:
+            token_kwarg = (
+                {"max_completion_tokens": 10}
+                if self._use_max_completion_tokens
+                else {"max_tokens": 10}
+            )
             resp = self._client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": "Reply with exactly: pong"}],
-                max_tokens=10,
                 temperature=0,
+                **token_kwarg,
             )
             reply = (resp.choices[0].message.content or "").strip().lower()
             return True, f"OK — model={self.model!r} replied: {reply!r}"
