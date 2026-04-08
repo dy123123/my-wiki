@@ -18,6 +18,7 @@ dependencies = [
     "rich>=13.0.0",
     "click>=8.0.0",
     "numpy>=1.24.0",
+    "pypdf>=4.0.0",
 ]
 
 [project.scripts]
@@ -27,12 +28,10 @@ llm-wiki = "llm_wiki.cli:app"
 # Basic normalization: text, HTML, CSV, XML
 normalize = [
     "markitdown>=0.1.0",
-    "pypdf>=4.0.0",
 ]
 # Full normalization: + PDF, Office docs, images, audio
 normalize-full = [
     "markitdown[all]>=0.1.0",
-    "pypdf>=4.0.0",
 ]
 # RAG support (numpy is now a core dep — this extra is kept for backwards compatibility)
 rag = []
