@@ -17,6 +17,7 @@ dependencies = [
     "openai>=1.0.0",
     "rich>=13.0.0",
     "click>=8.0.0",
+    "numpy>=1.24.0",
 ]
 
 [project.scripts]
@@ -31,8 +32,8 @@ normalize = [
 normalize-full = [
     "markitdown[all]>=0.1.0",
 ]
-# RAG support: numpy for compact embedding storage
-rag = ["numpy>=1.24.0"]
+# RAG support (numpy is now a core dep — this extra is kept for backwards compatibility)
+rag = []
 # MCP server for OpenCode, Claude Desktop, Cursor, Cline
 # uvicorn + starlette needed for --http (SSE) mode
 mcp = ["mcp>=1.0.0", "uvicorn>=0.29.0", "starlette>=0.37.0"]
@@ -42,7 +43,6 @@ all = [
     "mcp>=1.0.0",
     "uvicorn>=0.29.0",
     "starlette>=0.37.0",
-    "numpy>=1.24.0",
 ]
 # Development and testing
 dev = [
