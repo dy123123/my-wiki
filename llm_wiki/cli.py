@@ -289,12 +289,24 @@ def status() -> None:
 # ------------------------------------------------------------------ #
 
 @app.command()
-def mcp() -> None:
-    """Start an MCP stdio server (for OpenCode, Claude Desktop, Cursor, Cline)."""
+def mcp(
+    http: Annotated[bool, typer.Option("--http", help="Run as HTTP/SSE server (for remote access)")] = False,
+    host: Annotated[str, typer.Option("--host", help="HTTP bind address")] = "0.0.0.0",
+    port: Annotated[int, typer.Option("--port", "-p", help="HTTP port")] = 8080,
+    token: Annotated[str, typer.Option("--token", help="Bearer token for authentication (recommended)")] = "",
+) -> None:
+    """Start an MCP server — stdio (local) or HTTP/SSE (remote).
+
+    Local (OpenCode / Claude Desktop on same machine):
+      llm-wiki mcp
+
+    Remote (access from another machine):
+      llm-wiki mcp --http --port 8080 --token mysecrettoken
+    """
     settings = get_settings()
     vault = _get_vault(settings)
     from llm_wiki.commands.mcp_cmd import run
-    run(settings, vault)
+    run(settings, vault, http=http, host=host, port=port, token=token)
 
 
 # ------------------------------------------------------------------ #

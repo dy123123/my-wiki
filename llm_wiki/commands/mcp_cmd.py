@@ -1,4 +1,4 @@
-"""llm-wiki mcp — MCP stdio server for OpenCode, Claude Desktop, Cursor, etc."""
+"""llm-wiki mcp — MCP server (stdio or HTTP/SSE) for OpenCode, Claude Desktop, Cursor, etc."""
 
 from __future__ import annotations
 
@@ -10,11 +10,19 @@ from llm_wiki.config import Settings
 from llm_wiki.vault import Vault
 
 
-def run(settings: Settings, vault: Vault) -> None:
+def run(
+    settings: Settings,
+    vault: Vault,
+    http: bool = False,
+    host: str = "0.0.0.0",
+    port: int = 8080,
+    token: str = "",
+) -> None:
     try:
         from mcp.server import Server
-        from mcp.server.stdio import stdio_server
         from mcp import types as mcp_types
+        if not http:
+            from mcp.server.stdio import stdio_server
     except ImportError:
         from rich.console import Console
         Console().print(
@@ -22,6 +30,24 @@ def run(settings: Settings, vault: Vault) -> None:
             "Install with: [bold]pip install 'llm-wiki[mcp]'[/bold]"
         )
         raise SystemExit(1)
+
+    if http:
+        try:
+            import uvicorn
+            from starlette.applications import Starlette
+            from starlette.middleware import Middleware
+            from starlette.middleware.base import BaseHTTPMiddleware
+            from starlette.requests import Request
+            from starlette.responses import JSONResponse
+            from starlette.routing import Mount, Route
+            from mcp.server.sse import SseServerTransport
+        except ImportError:
+            from rich.console import Console
+            Console().print(
+                "[red]Error:[/red] HTTP mode requires extra deps.\n"
+                "Install with: [bold]pip install 'llm-wiki[mcp]'[/bold]"
+            )
+            raise SystemExit(1)
 
     from llm_wiki.llm import LLMClient
     llm = LLMClient(settings)
@@ -109,12 +135,69 @@ def run(settings: Settings, vault: Vault) -> None:
 
         return [mcp_types.TextContent(type="text", text=text)]
 
-    asyncio.run(_serve(server, stdio_server))
+    if http:
+        _run_http(server, mcp_types, host, port, token, uvicorn, Starlette, Middleware,
+                  BaseHTTPMiddleware, Request, JSONResponse, Route, Mount, SseServerTransport)
+    else:
+        asyncio.run(_serve_stdio(server, stdio_server))
 
 
-async def _serve(server, stdio_server) -> None:
+async def _serve_stdio(server, stdio_server) -> None:
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
+
+
+def _run_http(server, mcp_types, host, port, token, uvicorn, Starlette, Middleware,
+              BaseHTTPMiddleware, Request, JSONResponse, Route, Mount, SseServerTransport) -> None:
+    from rich.console import Console
+    c = Console()
+
+    init_options = server.create_initialization_options()
+    sse_transport = SseServerTransport("/messages/")
+
+    async def handle_sse(request: Request):
+        # Token auth
+        if token:
+            auth = request.headers.get("Authorization", "")
+            if auth != f"Bearer {token}":
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        async with sse_transport.connect_sse(
+            request.scope, request.receive, request._send
+        ) as streams:
+            await server.run(streams[0], streams[1], init_options)
+
+    class AuthMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            # Only protect /messages/ POST (SSE is handled above)
+            if token and request.url.path.startswith("/messages/"):
+                auth = request.headers.get("Authorization", "")
+                if auth != f"Bearer {token}":
+                    return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            return await call_next(request)
+
+    middleware = [Middleware(AuthMiddleware)] if token else []
+
+    app = Starlette(
+        routes=[
+            Route("/sse", endpoint=handle_sse),
+            Mount("/messages/", app=sse_transport.handle_post_message),
+            Route("/health", endpoint=lambda r: JSONResponse({"status": "ok"})),
+        ],
+        middleware=middleware,
+    )
+
+    c.print(f"[green]✓[/green] llm-wiki MCP HTTP server starting")
+    c.print(f"  SSE endpoint : [bold]http://{host}:{port}/sse[/bold]")
+    c.print(f"  Health check : http://{host}:{port}/health")
+    if token:
+        c.print(f"  Auth         : Bearer token enabled")
+    c.print()
+    c.print("[dim]OpenCode config:[/dim]")
+    auth_line = f'\n      "headers": {{"Authorization": "Bearer {token}"}}' if token else ""
+    c.print(f'[dim]  {{"mcpServers": {{"my-wiki": {{"type":"sse","url":"http://<server>:{port}/sse"{auth_line}}}}}}}[/dim]')
+    c.print()
+
+    uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
 # ---------------------------------------------------------------------------
