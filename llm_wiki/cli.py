@@ -285,19 +285,16 @@ def status() -> None:
 
 
 # ------------------------------------------------------------------ #
-#  serve
+#  mcp
 # ------------------------------------------------------------------ #
 
 @app.command()
-def serve(
-    host: Annotated[str, typer.Option("--host", help="Bind host")] = "127.0.0.1",
-    port: Annotated[int, typer.Option("--port", "-p", help="Bind port")] = 7432,
-) -> None:
-    """Start a local API server (for Obsidian and other UIs)."""
+def mcp() -> None:
+    """Start an MCP stdio server (for OpenCode, Claude Desktop, Cursor, Cline)."""
     settings = get_settings()
     vault = _get_vault(settings)
-    from llm_wiki.commands.serve_cmd import run
-    run(vault, settings, host, port)
+    from llm_wiki.commands.mcp_cmd import run
+    run(settings, vault)
 
 
 # ------------------------------------------------------------------ #
