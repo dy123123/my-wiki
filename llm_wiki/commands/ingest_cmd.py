@@ -416,6 +416,7 @@ def _build_concept_page(concept: ConceptRef, source_id: str, llm: LLMClient) -> 
         f"- [{r}]({slugify(r)}.md)" for r in concept.related_concepts
     ) if concept.related_concepts else ""
 
+    related_section = ("\n## Related Concepts\n\n" + related_md) if related_md else ""
     prompt = f"""\
 Write a wiki concept page. Return ONLY the markdown. No JSON. No code fences.
 
@@ -440,7 +441,7 @@ slug: {slug}
 ## Sources
 
 - [{source_id}](../sources/{source_id}.md) — context from this source
-{("\\n## Related Concepts\\n\\n" + related_md) if related_md else ""}
+{related_section}
 """
     page = llm.chat(_SYSTEM, prompt, temperature=0.2)
     page = _clean_page(page)
