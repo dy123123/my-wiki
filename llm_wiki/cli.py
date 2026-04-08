@@ -157,6 +157,30 @@ def ingest(
 
 
 # ------------------------------------------------------------------ #
+#  process (normalize + ingest in one step)
+# ------------------------------------------------------------------ #
+
+@app.command()
+def process(
+    source_id: Annotated[Optional[str], typer.Argument(help="Source ID to process")] = None,
+    all_sources: Annotated[bool, typer.Option("--all", help="Process all sources")] = False,
+    latest: Annotated[bool, typer.Option("--latest", help="Process the most recently added source")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Preview without writing")] = False,
+) -> None:
+    """Normalize then ingest a source in one step."""
+    settings = get_settings()
+    vault = _get_vault(settings)
+    llm = _get_llm(settings)
+    dry = dry_run or settings.dry_run
+
+    from llm_wiki.commands.normalize_cmd import run as run_normalize
+    from llm_wiki.commands.ingest_cmd import run as run_ingest
+
+    run_normalize(source_id, vault, all_sources, dry)
+    run_ingest(source_id, vault, llm, all_sources, latest, dry)
+
+
+# ------------------------------------------------------------------ #
 #  ask
 # ------------------------------------------------------------------ #
 
