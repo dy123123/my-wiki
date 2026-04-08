@@ -27,10 +27,12 @@ llm-wiki = "llm_wiki.cli:app"
 # Basic normalization: text, HTML, CSV, XML
 normalize = [
     "markitdown>=0.1.0",
+    "pypdf>=4.0.0",
 ]
 # Full normalization: + PDF, Office docs, images, audio
 normalize-full = [
     "markitdown[all]>=0.1.0",
+    "pypdf>=4.0.0",
 ]
 # RAG support (numpy is now a core dep — this extra is kept for backwards compatibility)
 rag = []
@@ -40,6 +42,7 @@ mcp = ["mcp>=1.0.0", "uvicorn>=0.29.0", "starlette>=0.37.0"]
 # Install everything
 all = [
     "markitdown[all]>=0.1.0",
+    "pypdf>=4.0.0",
     "mcp>=1.0.0",
     "uvicorn>=0.29.0",
     "starlette>=0.37.0",

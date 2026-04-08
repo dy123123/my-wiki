@@ -82,12 +82,26 @@ def _convert(raw_path: Path, ext: str) -> str:
             result = md.convert(str(raw_path))
             text = result.text_content
             if text and text.strip():
+                # If PDF text looks garbled (font glyph mapping failure), try fallback
+                if ext == ".pdf" and _is_garbled(text):
+                    fallback = _pdf_fallback(raw_path)
+                    if fallback and not _is_garbled(fallback):
+                        console.print(
+                            "[yellow]markitdown produced garbled text, used pypdf fallback.[/yellow]"
+                        )
+                        return fallback
                 return text
             # Fall through if empty result
         except ImportError:
             console.print("[yellow]markitdown not installed, falling back to plain text.[/yellow]")
         except Exception as e:
             console.print(f"[yellow]markitdown failed ({e}), falling back to plain text.[/yellow]")
+
+    # For PDFs without markitdown, try pypdf directly
+    if ext == ".pdf":
+        fallback = _pdf_fallback(raw_path)
+        if fallback:
+            return fallback
 
     # Plain text fallback
     if ext in {".md", ".txt", ".rst", ".text"}:
@@ -98,3 +112,30 @@ def _convert(raw_path: Path, ext: str) -> str:
         return raw_path.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return f"[Binary file — could not extract text: {raw_path.name}]\n"
+
+
+def _is_garbled(text: str) -> bool:
+    """Return True if text looks like a font glyph mapping failure."""
+    import re
+    cid_count = len(re.findall(r"\(cid:\d+\)", text))
+    total_words = max(len(text.split()), 1)
+    # Garbled if more than 10% of "words" are (cid:xxx) tokens
+    return cid_count / total_words > 0.1
+
+
+def _pdf_fallback(raw_path: Path) -> str | None:
+    """Try extracting PDF text with pypdf as fallback."""
+    try:
+        import pypdf  # type: ignore[import]
+
+        reader = pypdf.PdfReader(str(raw_path))
+        pages = []
+        for page in reader.pages:
+            page_text = page.extract_text() or ""
+            if page_text.strip():
+                pages.append(page_text)
+        return "\n\n".join(pages) if pages else None
+    except ImportError:
+        return None
+    except Exception:
+        return None
