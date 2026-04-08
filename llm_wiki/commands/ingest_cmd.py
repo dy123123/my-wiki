@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import textwrap
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
@@ -11,12 +13,13 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from llm_wiki.llm import LLMClient, LLMError
-from llm_wiki.schemas.models import SourceAnalysis, WikiPageResult
+from llm_wiki.schemas.models import SourceAnalysis, EntityRef, ConceptRef, TopicRef
 from llm_wiki.vault import Vault, SourceMeta, slugify, utcnow, utcdate
 
 console = Console()
 
-MAX_CONTENT_CHARS = 60_000  # truncate very long documents
+MAX_CONTENT_CHARS = 50_000   # chars sent to LLM per call
+MIN_SUMMARY_LEN   = 50       # if shorter, analysis is likely incomplete
 
 
 def run(
@@ -38,16 +41,12 @@ def run(
             return
         for meta in metas:
             _ingest_one(meta, vault, llm, dry_run)
-
     elif latest:
         metas = vault.list_sources()
         if not metas:
             console.print("[yellow]No sources found.[/yellow]")
             return
-        # Most recently added (last in sorted list by added_at)
-        metas_sorted = sorted(metas, key=lambda m: m.added_at, reverse=True)
-        _ingest_one(metas_sorted[0], vault, llm, dry_run)
-
+        _ingest_one(sorted(metas, key=lambda m: m.added_at, reverse=True)[0], vault, llm, dry_run)
     elif source_id:
         try:
             meta = vault.load_meta(source_id)
@@ -55,7 +54,6 @@ def run(
             console.print(f"[red]Error:[/red] {e}")
             raise SystemExit(1)
         _ingest_one(meta, vault, llm, dry_run)
-
     else:
         console.print("[red]Error:[/red] Provide a source-id, --latest, or --all")
         raise SystemExit(1)
@@ -74,109 +72,96 @@ def _ingest_one(meta: SourceMeta, vault: Vault, llm: LLMClient, dry_run: bool) -
 
     content = norm_path.read_text(encoding="utf-8")
     if len(content) > MAX_CONTENT_CHARS:
-        content = content[:MAX_CONTENT_CHARS] + "\n\n[Content truncated for processing…]\n"
-
-    schema_ctx = vault.load_schema()
+        content = content[:MAX_CONTENT_CHARS] + "\n\n[Content truncated…]\n"
 
     console.rule(f"[bold]Ingesting: {source_id}[/bold]")
 
-    # 1. Analyze source
+    # ------------------------------------------------------------------ #
+    # Step 1 — Analyze source
+    # ------------------------------------------------------------------ #
     with _spinner(f"Analyzing {source_id}…"):
         try:
-            analysis = _analyze_source(source_id, content, schema_ctx, llm)
+            analysis = _analyze_source(source_id, content, llm)
         except LLMError as e:
             console.print(f"[red]LLM error during analysis:[/red] {e}")
             return
 
-    console.print(f"  [dim]Title:[/dim] {analysis.title}")
-    console.print(f"  [dim]Entities:[/dim] {len(analysis.entities)}, "
-                  f"[dim]Concepts:[/dim] {len(analysis.concepts)}, "
-                  f"[dim]Topics:[/dim] {len(analysis.topics)}")
+    console.print(
+        f"  [dim]Title:[/dim] {analysis.title}\n"
+        f"  [dim]Entities:[/dim] {len(analysis.entities)}  "
+        f"[dim]Concepts:[/dim] {len(analysis.concepts)}  "
+        f"[dim]Topics:[/dim] {len(analysis.topics)}"
+    )
 
-    # 2. Generate source wiki page
-    with _spinner("Generating source page…"):
+    # ------------------------------------------------------------------ #
+    # Step 2 — Generate source wiki page (plain markdown, no JSON wrapper)
+    # ------------------------------------------------------------------ #
+    with _spinner("Writing source page…"):
         try:
-            source_page = _generate_source_page(source_id, analysis, schema_ctx, llm, extension=meta.extension)
+            source_page = _build_source_page(source_id, analysis, meta, llm)
         except LLMError as e:
-            console.print(f"[red]LLM error generating source page:[/red] {e}")
+            console.print(f"[red]LLM error writing source page:[/red] {e}")
             return
 
-    # 3. Generate/update entity, concept, topic pages
-    entity_pages: list[tuple[str, str, str, str]] = []  # (slug, name, type, content)
+    # ------------------------------------------------------------------ #
+    # Step 3 — Generate entity / concept / topic pages
+    # ------------------------------------------------------------------ #
+    entity_pages:  list[tuple[str, str, str, str]] = []   # (slug, name, etype, content)
+    concept_pages: list[tuple[str, str, str]] = []         # (slug, name, content)
+    topic_pages:   list[tuple[str, str, str]] = []         # (slug, name, content)
+
     for entity in analysis.entities:
         slug = slugify(entity.name)
-        existing_path = vault.entity_page_path(slug)
+        existing = vault.entity_page_path(slug)
         with _spinner(f"Entity: {entity.name}…"):
             try:
-                if existing_path.exists() and not dry_run:
-                    page_content = _update_page(
-                        existing_path.read_text(encoding="utf-8"),
-                        f"entity '{entity.name}'",
-                        json.dumps(entity.model_dump()),
-                        source_id,
-                        schema_ctx,
-                        llm,
-                    )
+                if existing.exists() and not dry_run:
+                    pg = _update_entity_page(entity, source_id, existing.read_text(encoding="utf-8"), llm)
                 else:
-                    page_content = _generate_entity_page(entity, source_id, schema_ctx, llm)
-                entity_pages.append((slug, entity.name, entity.type, page_content))
+                    pg = _build_entity_page(entity, source_id, llm)
+                entity_pages.append((slug, entity.name, entity.type, pg))
             except LLMError as e:
-                console.print(f"[yellow]  Skipping entity {entity.name}: {e}[/yellow]")
+                console.print(f"  [yellow]Skipping entity {entity.name}:[/yellow] {e}")
 
-    concept_pages: list[tuple[str, str, str]] = []  # (slug, name, content)
     for concept in analysis.concepts:
         slug = slugify(concept.name)
-        existing_path = vault.concept_page_path(slug)
+        existing = vault.concept_page_path(slug)
         with _spinner(f"Concept: {concept.name}…"):
             try:
-                if existing_path.exists() and not dry_run:
-                    page_content = _update_page(
-                        existing_path.read_text(encoding="utf-8"),
-                        f"concept '{concept.name}'",
-                        json.dumps(concept.model_dump()),
-                        source_id,
-                        schema_ctx,
-                        llm,
-                    )
+                if existing.exists() and not dry_run:
+                    pg = _update_concept_page(concept, source_id, existing.read_text(encoding="utf-8"), llm)
                 else:
-                    page_content = _generate_concept_page(concept, source_id, schema_ctx, llm)
-                concept_pages.append((slug, concept.name, page_content))
+                    pg = _build_concept_page(concept, source_id, llm)
+                concept_pages.append((slug, concept.name, pg))
             except LLMError as e:
-                console.print(f"[yellow]  Skipping concept {concept.name}: {e}[/yellow]")
+                console.print(f"  [yellow]Skipping concept {concept.name}:[/yellow] {e}")
 
-    topic_pages: list[tuple[str, str, str]] = []  # (slug, name, content)
     for topic in analysis.topics:
         slug = slugify(topic.name)
-        existing_path = vault.topic_page_path(slug)
+        existing = vault.topic_page_path(slug)
         with _spinner(f"Topic: {topic.name}…"):
             try:
-                if existing_path.exists() and not dry_run:
-                    page_content = _update_page(
-                        existing_path.read_text(encoding="utf-8"),
-                        f"topic '{topic.name}'",
-                        json.dumps(topic.model_dump()),
-                        source_id,
-                        schema_ctx,
-                        llm,
-                    )
+                if existing.exists() and not dry_run:
+                    pg = _update_topic_page(topic, source_id, existing.read_text(encoding="utf-8"), llm)
                 else:
-                    page_content = _generate_topic_page(topic, source_id, schema_ctx, llm)
-                topic_pages.append((slug, topic.name, page_content))
+                    pg = _build_topic_page(topic, source_id, llm)
+                topic_pages.append((slug, topic.name, pg))
             except LLMError as e:
-                console.print(f"[yellow]  Skipping topic {topic.name}: {e}[/yellow]")
+                console.print(f"  [yellow]Skipping topic {topic.name}:[/yellow] {e}")
 
+    # ------------------------------------------------------------------ #
+    # Step 4 — Write files (unless dry_run)
+    # ------------------------------------------------------------------ #
     if dry_run:
-        console.print("\n[dim]DRY RUN — no files written.[/dim]")
-        console.print(f"  Would create/update: {1 + len(entity_pages) + len(concept_pages) + len(topic_pages)} pages")
+        console.print(f"\n[dim]DRY RUN — would write {1 + len(entity_pages) + len(concept_pages) + len(topic_pages)} pages.[/dim]")
         return
 
-    # 4. Write all pages
     vault.source_page_path(source_id).write_text(source_page, encoding="utf-8")
     console.print(f"  [green]✓[/green] Source page: [cyan]wiki/sources/{source_id}.md[/cyan]")
 
-    for slug, name, _etype, content in entity_pages:
+    for slug, name, _, content in entity_pages:
         vault.entity_page_path(slug).write_text(content, encoding="utf-8")
-        console.print(f"  [green]✓[/green] Entity: [cyan]wiki/entities/{slug}.md[/cyan]")
+        console.print(f"  [green]✓[/green] Entity:  [cyan]wiki/entities/{slug}.md[/cyan]")
 
     for slug, name, content in concept_pages:
         vault.concept_page_path(slug).write_text(content, encoding="utf-8")
@@ -184,282 +169,532 @@ def _ingest_one(meta: SourceMeta, vault: Vault, llm: LLMClient, dry_run: bool) -
 
     for slug, name, content in topic_pages:
         vault.topic_page_path(slug).write_text(content, encoding="utf-8")
-        console.print(f"  [green]✓[/green] Topic: [cyan]wiki/topics/{slug}.md[/cyan]")
+        console.print(f"  [green]✓[/green] Topic:   [cyan]wiki/topics/{slug}.md[/cyan]")
 
-    # 5. Update index
+    # Index + log
     vault.update_index(
         source_id=source_id,
         title=analysis.title,
-        entity_slugs=[(slug, name, etype) for slug, name, etype, _ in entity_pages],
-        concept_slugs=[(slug, name) for slug, name, _ in concept_pages],
-        topic_slugs=[(slug, name) for slug, name, _ in topic_pages],
+        entity_slugs=[(sl, nm, et) for sl, nm, et, _ in entity_pages],
+        concept_slugs=[(sl, nm) for sl, nm, _ in concept_pages],
+        topic_slugs=[(sl, nm) for sl, nm, _ in topic_pages],
         tags=analysis.tags,
     )
     console.print(f"  [green]✓[/green] index.md updated")
 
-    # 6. Update metadata
     meta.update(ingested_at=utcnow(), title=analysis.title)
     vault.save_meta(meta)
 
-    # 7. Append log
-    log_lines = [
-        f"- Ingested source: **{source_id}** — {analysis.title}",
-        f"- Source page: `wiki/sources/{source_id}.md`",
-    ]
+    log_lines = [f"- Ingested **{source_id}** — {analysis.title}"]
     for slug, name, _, _ in entity_pages:
-        log_lines.append(f"- Entity: `wiki/entities/{slug}.md`")
+        log_lines.append(f"  - entity: `{slug}`")
     for slug, name, _ in concept_pages:
-        log_lines.append(f"- Concept: `wiki/concepts/{slug}.md`")
+        log_lines.append(f"  - concept: `{slug}`")
     for slug, name, _ in topic_pages:
-        log_lines.append(f"- Topic: `wiki/topics/{slug}.md`")
-
+        log_lines.append(f"  - topic: `{slug}`")
     vault.append_log("\n".join(log_lines))
     console.print(f"  [green]✓[/green] log.md updated")
-    console.print(f"\n[green]Done.[/green] Source [bold]{source_id}[/bold] ingested.")
+    console.print(f"\n[green]Done.[/green] {source_id} ingested.")
 
 
-# ------------------------------------------------------------------ #
-#  LLM prompt functions
-# ------------------------------------------------------------------ #
+# ======================================================================
+# LLM helpers
+# ======================================================================
 
-_SYSTEM_WIKI_AGENT = """\
-You are a wiki maintainer agent. You maintain a structured, accurate, and well-linked knowledge base.
-Follow the wiki schema and page conventions provided in context.
-Only make claims supported by the source document.
-Always produce valid JSON when asked.
+_SYSTEM = """\
+You are a precise wiki maintainer. Extract information accurately from documents.
+Only include facts present in the document. Be concise but complete.
 """
 
 
-def _analyze_source(source_id: str, content: str, schema_ctx: str, llm: LLMClient) -> SourceAnalysis:
-    system = f"{_SYSTEM_WIKI_AGENT}\n\n{schema_ctx}"
-    user = f"""\
-Analyze the following document (source_id: `{source_id}`) and extract structured information.
+def _analyze_source(source_id: str, content: str, llm: LLMClient) -> SourceAnalysis:
+    """
+    Step 1: extract structured metadata.
+    Uses a simple flat JSON schema that works with smaller models.
+    """
+    prompt = f"""\
+Read this document (id: {source_id}) and return a JSON object.
 
-Return a JSON object matching this schema exactly:
+Return ONLY valid JSON, no explanation, no markdown fences.
+
+JSON schema:
 {{
-  "title": "string",
-  "summary": "string (2-3 sentences)",
-  "key_points": ["string", ...],
+  "title": "document title (string)",
+  "summary": "2-4 sentence summary of the main contribution (string)",
+  "key_points": ["bullet 1", "bullet 2", "..."],
   "entities": [
-    {{"name": "string", "type": "person|organization|product|place|event|other",
-      "description": "string", "mentions": ["string", ...]}}
+    {{"name": "full name", "type": "person|organization|product|place|event|other", "description": "one sentence"}}
   ],
   "concepts": [
-    {{"name": "string", "description": "string", "related_concepts": ["string", ...]}}
+    {{"name": "concept name", "description": "plain-language definition", "related_concepts": ["name", "..."]}}
   ],
   "topics": [
-    {{"name": "string", "description": "string"}}
+    {{"name": "topic name", "description": "one sentence on how this doc relates"}}
   ],
-  "tags": ["string", ...],
+  "tags": ["lowercase", "tags"],
   "date_published": "YYYY-MM-DD or null",
-  "authors": ["string", ...]
+  "authors": ["Author Name"]
 }}
 
-Document content:
+Document:
 ---
-{content}
+{content[:MAX_CONTENT_CHARS]}
 ---"""
 
-    data = llm.chat_json(system, user)
+    raw = llm.chat(_SYSTEM, prompt, temperature=0.1)
+    data = _safe_parse_json(raw)
+    _coerce_analysis(data)
     return SourceAnalysis.model_validate(data)
 
 
-def _generate_source_page(
-    source_id: str, analysis: SourceAnalysis, schema_ctx: str, llm: LLMClient, extension: str = ""
-) -> str:
-    system = f"{_SYSTEM_WIKI_AGENT}\n\n{schema_ctx}"
+def _coerce_analysis(d: dict) -> None:
+    """Fill in missing fields with sensible defaults so validation doesn't fail."""
+    d.setdefault("title", "Untitled Document")
+    d.setdefault("summary", "")
+    d.setdefault("key_points", [])
+    d.setdefault("entities", [])
+    d.setdefault("concepts", [])
+    d.setdefault("topics", [])
+    d.setdefault("tags", [])
+    d.setdefault("date_published", None)
+    d.setdefault("authors", [])
+
+    # Normalise entity/concept/topic entries
+    for e in d["entities"]:
+        e.setdefault("mentions", [])
+        if e.get("type") not in ("person","organization","product","place","event","other"):
+            e["type"] = "other"
+    for c in d["concepts"]:
+        c.setdefault("related_concepts", [])
+    # topics can be plain strings → convert
+    fixed_topics = []
+    for t in d["topics"]:
+        if isinstance(t, str):
+            fixed_topics.append({"name": t, "description": ""})
+        else:
+            t.setdefault("description", "")
+            fixed_topics.append(t)
+    d["topics"] = fixed_topics
+
+
+def _build_source_page(source_id: str, analysis: SourceAnalysis, meta: SourceMeta, llm: LLMClient) -> str:
+    """
+    Step 2a: Generate the source summary wiki page.
+    Ask for plain markdown — no JSON wrapper, no code fences.
+    Pre-build the skeleton so the model only writes prose.
+    """
+    entity_links = "\n".join(
+        f"- [{e.name}](../entities/{slugify(e.name)}.md) — {e.description}"
+        for e in analysis.entities
+    ) or "_(none identified)_"
+
+    concept_links = "\n".join(
+        f"- [{c.name}](../concepts/{slugify(c.name)}.md)"
+        for c in analysis.concepts
+    ) or "_(none identified)_"
+
+    topic_links = "\n".join(
+        f"- [{t.name}](../topics/{slugify(t.name)}.md)"
+        for t in analysis.topics
+    ) or "_(none identified)_"
+
+    key_points_md = "\n".join(f"- {p}" for p in analysis.key_points) or "- (see summary)"
+    tags_yaml = ", ".join(analysis.tags) or ""
+    authors_yaml = ", ".join(analysis.authors) if analysis.authors else "Unknown"
+
+    # Build skeleton — ask LLM to write the prose sections only
+    prompt = f"""\
+Write the body content for this wiki source page.
+Return ONLY the markdown content below. No JSON. No code fences. No explanations.
+
+Fill in the sections marked with <WRITE> based on this analysis:
+Title: {analysis.title}
+Summary: {analysis.summary}
+Key points: {json.dumps(analysis.key_points)}
+Entities: {json.dumps([e.name for e in analysis.entities])}
+Concepts: {json.dumps([c.name for c in analysis.concepts])}
+
+Start your response with the YAML frontmatter line "---" exactly as shown:
+
+---
+source_id: {source_id}
+title: "{analysis.title}"
+type: source
+added: {utcdate()}
+date_published: {analysis.date_published or "null"}
+authors: [{authors_yaml}]
+tags: [{tags_yaml}]
+---
+
+# {analysis.title}
+
+<WRITE: one bold sentence describing what this document is about>
+
+## Summary
+
+<WRITE: 3-5 sentences expanding on the summary, explaining the main contribution and significance>
+
+## Key Points
+
+{key_points_md}
+
+## Methodology / Approach
+
+<WRITE: 2-4 sentences describing the technical approach or methodology used in the document>
+
+## Results / Findings
+
+<WRITE: 2-4 sentences describing the key results, findings, or conclusions>
+
+## Entities
+
+{entity_links}
+
+## Concepts
+
+{concept_links}
+
+## Topics
+
+{topic_links}
+
+## Source
+
+- Raw: `../../raw/{source_id}{meta.extension}`
+- Normalized: `../../normalized/{source_id}.md`
+"""
+
+    page = llm.chat(_SYSTEM, prompt, temperature=0.2, max_tokens=llm.max_tokens)
+    page = _clean_page(page)
+
+    # Fallback: if LLM returned garbage or very short content, build it ourselves
+    if len(page.strip()) < 200:
+        page = _fallback_source_page(source_id, analysis, meta)
+
+    return page
+
+
+def _build_entity_page(entity: EntityRef, source_id: str, llm: LLMClient) -> str:
+    slug = slugify(entity.name)
+    prompt = f"""\
+Write a wiki entity page. Return ONLY the markdown. No JSON. No code fences.
+
+Entity: {entity.name}
+Type: {entity.type}
+Description: {entity.description}
+From source: {source_id}
+
+---
+name: "{entity.name}"
+type: entity
+entity_type: {entity.type}
+slug: {slug}
+---
+
+# {entity.name}
+
+**{entity.description}**
+
+## Description
+
+<WRITE: 2-4 sentences expanding on the entity's role, background, or significance based on the description>
+
+## Sources
+
+- [{source_id}](../sources/{source_id}.md){' — "' + entity.mentions[0] + '"' if entity.mentions else ''}
+"""
+    page = llm.chat(_SYSTEM, prompt, temperature=0.2)
+    page = _clean_page(page)
+    if len(page.strip()) < 100:
+        page = _fallback_entity_page(entity, source_id)
+    return page
+
+
+def _build_concept_page(concept: ConceptRef, source_id: str, llm: LLMClient) -> str:
+    slug = slugify(concept.name)
+    related_md = "\n".join(
+        f"- [{r}]({slugify(r)}.md)" for r in concept.related_concepts
+    ) if concept.related_concepts else ""
+
+    prompt = f"""\
+Write a wiki concept page. Return ONLY the markdown. No JSON. No code fences.
+
+Concept: {concept.name}
+Definition: {concept.description}
+From source: {source_id}
+
+---
+name: "{concept.name}"
+type: concept
+slug: {slug}
+---
+
+# {concept.name}
+
+**{concept.description}**
+
+## Description
+
+<WRITE: 3-5 sentences explaining this concept clearly, its significance, how it works or why it matters>
+
+## Sources
+
+- [{source_id}](../sources/{source_id}.md) — context from this source
+{("\\n## Related Concepts\\n\\n" + related_md) if related_md else ""}
+"""
+    page = llm.chat(_SYSTEM, prompt, temperature=0.2)
+    page = _clean_page(page)
+    if len(page.strip()) < 100:
+        page = _fallback_concept_page(concept, source_id)
+    return page
+
+
+def _build_topic_page(topic: TopicRef, source_id: str, llm: LLMClient) -> str:
+    slug = slugify(topic.name)
+    prompt = f"""\
+Write a wiki topic page. Return ONLY the markdown. No JSON. No code fences.
+
+Topic: {topic.name}
+Relevance: {topic.description}
+From source: {source_id}
+
+---
+name: "{topic.name}"
+type: topic
+slug: {slug}
+---
+
+# {topic.name}
+
+**<WRITE: one bold sentence describing this topic>**
+
+## Overview
+
+<WRITE: 3-5 sentences describing this topic area broadly>
+
+## Sources
+
+- [{source_id}](../sources/{source_id}.md) — {topic.description}
+"""
+    page = llm.chat(_SYSTEM, prompt, temperature=0.2)
+    page = _clean_page(page)
+    if len(page.strip()) < 100:
+        page = _fallback_topic_page(topic, source_id)
+    return page
+
+
+def _update_entity_page(entity: EntityRef, source_id: str, existing: str, llm: LLMClient) -> str:
+    prompt = f"""\
+Update this existing wiki entity page with new information from source `{source_id}`.
+Return ONLY the updated markdown. No JSON. No code fences.
+
+New info: {entity.description}
+{('Quotes: "' + entity.mentions[0] + '"') if entity.mentions else ''}
+
+Existing page:
+---
+{existing}
+---
+
+Rules: keep all existing content, add the new source citation to ## Sources, add any new description details.
+"""
+    page = llm.chat(_SYSTEM, prompt, temperature=0.1)
+    page = _clean_page(page)
+    return page if len(page.strip()) > 100 else existing
+
+
+def _update_concept_page(concept: ConceptRef, source_id: str, existing: str, llm: LLMClient) -> str:
+    prompt = f"""\
+Update this wiki concept page with new info from source `{source_id}`.
+Return ONLY the updated markdown. No JSON. No code fences.
+
+New description: {concept.description}
+Existing page:
+---
+{existing}
+---
+Add new source citation to ## Sources. Keep all existing content.
+"""
+    page = llm.chat(_SYSTEM, prompt, temperature=0.1)
+    page = _clean_page(page)
+    return page if len(page.strip()) > 100 else existing
+
+
+def _update_topic_page(topic: TopicRef, source_id: str, existing: str, llm: LLMClient) -> str:
+    prompt = f"""\
+Update this wiki topic page with new source `{source_id}`.
+Return ONLY the updated markdown. No JSON. No code fences.
+Add to ## Sources: [{source_id}](../sources/{source_id}.md) — {topic.description}
+Existing page:
+---
+{existing}
+---
+"""
+    page = llm.chat(_SYSTEM, prompt, temperature=0.1)
+    page = _clean_page(page)
+    return page if len(page.strip()) > 100 else existing + f"\n- [{source_id}](../sources/{source_id}.md) — {topic.description}\n"
+
+
+# ======================================================================
+# Fallback page builders (no LLM needed — used when LLM output is bad)
+# ======================================================================
+
+def _fallback_source_page(source_id: str, analysis: SourceAnalysis, meta: SourceMeta) -> str:
+    key_points = "\n".join(f"- {p}" for p in analysis.key_points) or "- (see normalized source)"
     entity_links = "\n".join(
         f"- [{e.name}](../entities/{slugify(e.name)}.md) — {e.description}"
         for e in analysis.entities
     )
     concept_links = "\n".join(
-        f"- [{c.name}](../concepts/{slugify(c.name)}.md) — {c.description}"
+        f"- [{c.name}](../concepts/{slugify(c.name)}.md)"
         for c in analysis.concepts
     )
     topic_links = "\n".join(
         f"- [{t.name}](../topics/{slugify(t.name)}.md)"
         for t in analysis.topics
     )
-    key_points = "\n".join(f"- {p}" for p in analysis.key_points)
-    tags_str = ", ".join(analysis.tags)
-    authors_str = ", ".join(analysis.authors) if analysis.authors else "Unknown"
-    date_str = analysis.date_published or utcdate()
+    return textwrap.dedent(f"""\
+        ---
+        source_id: {source_id}
+        title: "{analysis.title}"
+        type: source
+        added: {utcdate()}
+        tags: [{', '.join(analysis.tags)}]
+        ---
 
-    user = f"""\
-Generate a wiki source page for source_id `{source_id}`.
+        # {analysis.title}
 
-Analysis:
-{json.dumps(analysis.model_dump(), indent=2)}
+        **{analysis.summary or 'Source document — see normalized content for details.'}**
 
-Return a JSON object:
-{{"content": "<full markdown page content>"}}
+        ## Summary
 
-The page MUST include:
-1. YAML frontmatter:
-   ```yaml
-   ---
-   source_id: {source_id}
-   title: "{analysis.title}"
-   type: source
-   added: {utcdate()}
-   date_published: {date_str}
-   authors: [{authors_str}]
-   tags: [{tags_str}]
-   ---
-   ```
-2. A bold one-sentence description paragraph
-3. ## Summary — from analysis.summary
-4. ## Key Points — bullet list:
-{key_points}
-5. ## Entities — pre-built links:
-{entity_links or "(none identified)"}
-6. ## Concepts — pre-built links:
-{concept_links or "(none identified)"}
-7. ## Topics — pre-built links:
-{topic_links or "(none identified)"}
-8. ## Source
-   - Raw: `../../raw/{source_id}{extension}`
-   - Normalized: `../../normalized/{source_id}.md`
-"""
-    data = llm.chat_json(system, user)
-    return WikiPageResult.model_validate(data).content
+        {analysis.summary or '_Summary not available._'}
+
+        ## Key Points
+
+        {key_points}
+
+        {'## Entities' + chr(10) + chr(10) + entity_links + chr(10) if entity_links else ''}
+        {'## Concepts' + chr(10) + chr(10) + concept_links + chr(10) if concept_links else ''}
+        {'## Topics' + chr(10) + chr(10) + topic_links + chr(10) if topic_links else ''}
+
+        ## Source
+
+        - Raw: `../../raw/{source_id}{meta.extension}`
+        - Normalized: `../../normalized/{source_id}.md`
+        """)
 
 
-def _generate_entity_page(entity, source_id: str, schema_ctx: str, llm: LLMClient) -> str:
-    system = f"{_SYSTEM_WIKI_AGENT}\n\n{schema_ctx}"
-    slug = slugify(entity.name)
-    mentions_str = "\n".join(f'  - "{m}"' for m in entity.mentions)
+def _fallback_entity_page(entity: EntityRef, source_id: str) -> str:
+    return textwrap.dedent(f"""\
+        ---
+        name: "{entity.name}"
+        type: entity
+        entity_type: {entity.type}
+        slug: {slugify(entity.name)}
+        ---
 
-    user = f"""\
-Generate a wiki entity page for the entity described below.
+        # {entity.name}
 
-Entity:
-{json.dumps(entity.model_dump(), indent=2)}
+        **{entity.description}**
 
-Source reference: `{source_id}` — `../sources/{source_id}.md`
+        ## Description
 
-Return a JSON object:
-{{"content": "<full markdown page content>"}}
+        {entity.description}
 
-The page MUST include:
-1. YAML frontmatter:
-   ```yaml
-   ---
-   name: "{entity.name}"
-   type: entity
-   entity_type: {entity.type}
-   slug: {slug}
-   ---
-   ```
-2. A bold one-sentence description
-3. ## Description — expanded from entity.description
-4. ## Sources — citing [{source_id}](../sources/{source_id}.md) with relevant quote(s)
-5. ## Related Entities — if any (use relative links `./slug.md`)
-6. ## Related Concepts — if any (use relative links `../concepts/slug.md`)
-"""
-    data = llm.chat_json(system, user)
-    return WikiPageResult.model_validate(data).content
+        ## Sources
+
+        - [{source_id}](../sources/{source_id}.md)
+        """)
 
 
-def _generate_concept_page(concept, source_id: str, schema_ctx: str, llm: LLMClient) -> str:
-    system = f"{_SYSTEM_WIKI_AGENT}\n\n{schema_ctx}"
-    slug = slugify(concept.name)
+def _fallback_concept_page(concept: ConceptRef, source_id: str) -> str:
     related = "\n".join(f"- [{r}]({slugify(r)}.md)" for r in concept.related_concepts)
+    return textwrap.dedent(f"""\
+        ---
+        name: "{concept.name}"
+        type: concept
+        slug: {slugify(concept.name)}
+        ---
 
-    user = f"""\
-Generate a wiki concept page for the concept described below.
+        # {concept.name}
 
-Concept:
-{json.dumps(concept.model_dump(), indent=2)}
+        **{concept.description}**
 
-Source reference: `{source_id}` — `../sources/{source_id}.md`
+        ## Description
 
-Return a JSON object:
-{{"content": "<full markdown page content>"}}
+        {concept.description}
 
-The page MUST include:
-1. YAML frontmatter:
-   ```yaml
-   ---
-   name: "{concept.name}"
-   type: concept
-   slug: {slug}
-   ---
-   ```
-2. A bold one-sentence definition
-3. ## Description — educational explanation
-4. ## Sources — citing [{source_id}](../sources/{source_id}.md)
-5. ## Related Concepts:
-{related or "(none)"}
-"""
-    data = llm.chat_json(system, user)
-    return WikiPageResult.model_validate(data).content
+        ## Sources
+
+        - [{source_id}](../sources/{source_id}.md)
+        {('## Related Concepts' + chr(10) + chr(10) + related) if related else ''}
+        """)
 
 
-def _generate_topic_page(topic, source_id: str, schema_ctx: str, llm: LLMClient) -> str:
-    system = f"{_SYSTEM_WIKI_AGENT}\n\n{schema_ctx}"
-    slug = slugify(topic.name)
+def _fallback_topic_page(topic: TopicRef, source_id: str) -> str:
+    return textwrap.dedent(f"""\
+        ---
+        name: "{topic.name}"
+        type: topic
+        slug: {slugify(topic.name)}
+        ---
 
-    user = f"""\
-Generate a wiki topic page for the topic described below.
+        # {topic.name}
 
-Topic:
-{json.dumps(topic.model_dump(), indent=2)}
+        **{topic.description or topic.name}**
 
-Source reference: `{source_id}` — `../sources/{source_id}.md`
+        ## Overview
 
-Return a JSON object:
-{{"content": "<full markdown page content>"}}
+        {topic.description or 'Topic area related to the ingested sources.'}
 
-The page MUST include:
-1. YAML frontmatter:
-   ```yaml
-   ---
-   name: "{topic.name}"
-   type: topic
-   slug: {slug}
-   ---
-   ```
-2. A bold one-sentence description
-3. ## Overview
-4. ## Sources — citing [{source_id}](../sources/{source_id}.md) and how it relates to this topic
-5. ## Related Pages
-"""
-    data = llm.chat_json(system, user)
-    return WikiPageResult.model_validate(data).content
+        ## Sources
+
+        - [{source_id}](../sources/{source_id}.md) — {topic.description}
+        """)
 
 
-def _update_page(
-    existing_content: str,
-    page_label: str,
-    new_info_json: str,
-    source_id: str,
-    schema_ctx: str,
-    llm: LLMClient,
-) -> str:
-    system = f"{_SYSTEM_WIKI_AGENT}\n\n{schema_ctx}"
-    user = f"""\
-Update the existing wiki page for {page_label} with new information from source `{source_id}`.
+# ======================================================================
+# Utilities
+# ======================================================================
 
-Existing page:
----
-{existing_content}
----
+def _safe_parse_json(text: str) -> dict:
+    """Parse JSON from LLM response, tolerating markdown fences and prose wrapping."""
+    # Direct parse
+    try:
+        return json.loads(text.strip())
+    except (json.JSONDecodeError, ValueError):
+        pass
 
-New information (from `{source_id}`):
-{new_info_json}
+    # Strip markdown code fences
+    cleaned = re.sub(r"```(?:json)?\s*", "", text)
+    cleaned = re.sub(r"```\s*", "", cleaned).strip()
+    try:
+        return json.loads(cleaned)
+    except (json.JSONDecodeError, ValueError):
+        pass
 
-Return a JSON object:
-{{"content": "<full updated markdown page content>"}}
+    # Find the outermost JSON object
+    match = re.search(r"\{[\s\S]*\}", text)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except (json.JSONDecodeError, ValueError):
+            pass
 
-Rules:
-- Preserve all existing content and structure
-- Add new information without duplicating what already exists
-- Add a citation to [{source_id}](../sources/{source_id}.md) in the ## Sources section
-- Do not remove any existing information or citations
-"""
-    data = llm.chat_json(system, user)
-    return WikiPageResult.model_validate(data).content
+    raise LLMError(f"Could not extract JSON from response (first 300 chars): {text[:300]}")
+
+
+def _clean_page(text: str) -> str:
+    """Strip leading/trailing whitespace and any markdown code fences wrapping the page."""
+    text = text.strip()
+    # Remove wrapping ```markdown ... ``` if present
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:markdown|md)?\s*\n?", "", text)
+        text = re.sub(r"\n?```\s*$", "", text)
+    # Replace <WRITE: ...> placeholder that the model left unfilled
+    text = re.sub(r"<WRITE:[^>]*>", "", text)
+    return text.strip()
 
 
 @contextmanager
