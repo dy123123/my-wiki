@@ -11,8 +11,10 @@ Inspired by Andrej Karpathy's LLM Wiki pattern.
 - **Structured extraction** — entities, concepts, topics, and tags extracted via JSON-mode LLM calls
 - **Incremental ingestion** — re-ingest a source to update existing wiki pages without duplication
 - **Full-text search** — keyword search across all wiki pages
+- **RAG retrieval** — chunk + embed sources; `ask` searches wiki pages first, then retrieves precise chunks from raw documents (register addresses, specs, exact values)
+- **Reranking** — optional cross-encoder reranker (Qwen3-Reranker, etc.) for better chunk ranking
 - **Lint** — detect orphan pages, dead links, duplicate slugs, missing sections, empty pages
-- **Q&A** — ask questions answered with citations from the wiki; optionally save to `analyses/`
+- **Q&A** — ask questions answered with citations from the wiki + RAG chunks; optionally save to `analyses/`
 - **Local API server** — `llm-wiki serve` exposes `/ask`, `/search`, `/pages` for Obsidian and other UIs
 - **Dry-run support** — preview any destructive operation before running it
 - **Immutable raw files** — source files are write-protected once added
@@ -116,12 +118,18 @@ Analyze the normalized content with the LLM and build/update wiki pages:
 4. Updates `wiki/index.md`
 5. Appends to `wiki/log.md`
 
-### `llm-wiki ask "<question>" [--save]`
-Answer a question from the wiki content:
-- Searches wiki pages by keyword relevance
-- Loads the most relevant pages as context
-- Returns an answer with citations and confidence level
+### `llm-wiki embed [source-id] [--all] [--force] [--dry-run]`
+Chunk and embed normalized sources for RAG retrieval.
+Requires `LLM_WIKI_EMBED_MODEL` to be set. Called automatically by `process` when configured.
+
+### `llm-wiki ask "<question>" [--save] [--no-rag]`
+Answer a question from the wiki + RAG:
+1. Searches wiki pages by keyword relevance (structural knowledge)
+2. If `LLM_WIKI_EMBED_MODEL` is set, retrieves relevant chunks from raw source documents (precise values, specs)
+3. Optionally reranks chunks with `LLM_WIKI_RERANK_MODEL`
+4. Returns an answer with citations and confidence level
 - `--save` writes the answer to `wiki/analyses/`
+- `--no-rag` skips RAG and uses only wiki pages
 
 ### `llm-wiki search "<query>"`
 Full-text keyword search across all wiki pages, with scored results and inline snippets.
@@ -192,6 +200,49 @@ All settings are read from environment variables (prefixed `LLM_WIKI_`) or a `.e
 | `LLM_WIKI_DRY_RUN` | `false` | Global dry-run flag |
 | `LLM_WIKI_VERBOSE` | `false` | Verbose output |
 
+### RAG (Embedding + Reranking)
+
+To enable RAG for precise document lookup (register addresses, spec values, etc.):
+
+```bash
+# .env
+LLM_WIKI_EMBED_MODEL=qwen3-embedding          # or nomic-embed-text, text-embedding-ada-002, etc.
+LLM_WIKI_EMBED_BASE_URL=http://localhost:11434/v1  # defaults to llm_base_url if empty
+LLM_WIKI_RERANK_MODEL=qwen3-reranker          # optional — leave empty for cosine similarity only
+LLM_WIKI_CHUNK_SIZE=800                       # chars per chunk (default)
+LLM_WIKI_CHUNK_OVERLAP=150                    # overlap (default)
+LLM_WIKI_RAG_TOP_K=5                          # chunks per query (default)
+```
+
+Once configured, `llm-wiki process` auto-embeds and `llm-wiki ask` uses both wiki + RAG:
+
+```bash
+llm-wiki add hardware-manual.pdf
+llm-wiki process --latest     # normalize + ingest + embed (all in one)
+llm-wiki ask "UART TX register address"
+```
+
+Or embed separately after ingestion:
+
+```bash
+llm-wiki embed --all          # embed all normalized sources
+llm-wiki embed <source-id>    # embed a specific source
+llm-wiki embed --all --force  # re-embed (e.g. after changing chunk_size)
+```
+
+#### How `ask` uses wiki + RAG
+
+```
+Question
+  │
+  ├─ Wiki keyword search → summary pages (concepts, entities, topics)
+  │                        → structural understanding
+  │
+  └─ RAG embedding search → raw document chunks
+      └─ optional rerank  → precise values (register addresses, specs)
+                          → combined context → LLM answer
+```
+
 ### Using a local LLM (Ollama)
 
 ```bash
@@ -217,6 +268,10 @@ vault/
 │   └── {source-id}.meta.json     # Metadata sidecar
 ├── normalized/                   # Markitdown output
 │   └── {source-id}.md
+├── chunks/                       # RAG: chunked text (JSON)
+│   └── {source-id}.json
+├── embeddings/                   # RAG: embedding vectors (JSON)
+│   └── {source-id}.json
 ├── wiki/
 │   ├── index.md                  # Master table of contents
 │   ├── log.md                    # Activity log

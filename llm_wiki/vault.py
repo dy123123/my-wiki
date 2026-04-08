@@ -107,6 +107,8 @@ class Vault:
         self.normalized = self.path / "normalized"
         self.wiki = self.path / "wiki"
         self.schema = self.path / "schema"
+        self.chunks = self.path / "chunks"
+        self.embeddings = self.path / "embeddings"
 
         # Wiki subdirectories
         self.wiki_sources = self.wiki / "sources"
@@ -130,6 +132,8 @@ class Vault:
             self.raw,
             self.normalized,
             self.schema,
+            self.chunks,
+            self.embeddings,
             self.wiki_sources,
             self.wiki_entities,
             self.wiki_concepts,

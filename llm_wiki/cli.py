@@ -42,6 +42,16 @@ def _get_llm(settings: Settings):
     return LLMClient(settings)
 
 
+def _get_embedder(settings: Settings):
+    from llm_wiki.embedder import EmbedClient
+    return EmbedClient(settings)
+
+
+def _get_rag(vault: Vault):
+    from llm_wiki.rag import RagIndex
+    return RagIndex(vault)
+
+
 # ------------------------------------------------------------------ #
 #  init
 # ------------------------------------------------------------------ #
@@ -179,6 +189,11 @@ def process(
     run_normalize(source_id, vault, all_sources, dry)
     run_ingest(source_id, vault, llm, all_sources, latest, dry)
 
+    if settings.embed_model:
+        embedder = _get_embedder(settings)
+        from llm_wiki.commands.embed_cmd import run as run_embed
+        run_embed(source_id, vault, embedder, all_sources, False, dry)
+
 
 # ------------------------------------------------------------------ #
 #  ask
@@ -188,14 +203,39 @@ def process(
 def ask(
     question: Annotated[str, typer.Argument(help="Question to answer from the wiki")],
     save: Annotated[bool, typer.Option("--save", "-s", help="Save answer to analyses/")] = False,
+    no_rag: Annotated[bool, typer.Option("--no-rag", help="Skip RAG retrieval")] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
 ) -> None:
-    """Ask a question and get an answer from the wiki."""
+    """Ask a question — searches wiki pages then RAG chunks (if configured)."""
     settings = get_settings()
     vault = _get_vault(settings)
     llm = _get_llm(settings)
+    embedder = None
+    rag = None
+    if not no_rag and settings.embed_model:
+        embedder = _get_embedder(settings)
+        rag = _get_rag(vault)
     from llm_wiki.commands.ask_cmd import run
-    run(question, vault, llm, save, dry_run or settings.dry_run)
+    run(question, vault, llm, save, dry_run or settings.dry_run, embedder=embedder, rag=rag)
+
+
+# ------------------------------------------------------------------ #
+#  embed
+# ------------------------------------------------------------------ #
+
+@app.command()
+def embed(
+    source_id: Annotated[Optional[str], typer.Argument(help="Source ID to embed")] = None,
+    all_sources: Annotated[bool, typer.Option("--all", help="Embed all sources")] = False,
+    force: Annotated[bool, typer.Option("--force", help="Re-embed even if already indexed")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
+) -> None:
+    """Chunk and embed normalized sources for RAG retrieval."""
+    settings = get_settings()
+    vault = _get_vault(settings)
+    embedder = _get_embedder(settings)
+    from llm_wiki.commands.embed_cmd import run
+    run(source_id, vault, embedder, all_sources, force, dry_run or settings.dry_run)
 
 
 # ------------------------------------------------------------------ #

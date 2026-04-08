@@ -48,6 +48,43 @@ class Settings(BaseSettings):
         description="Path to the wiki vault directory",
     )
 
+    # Embedding (RAG)
+    embed_base_url: str = Field(
+        default="",
+        description="Embedding API base URL (empty = use llm_base_url)",
+    )
+    embed_api_key: str = Field(
+        default="",
+        description="Embedding API key (empty = use llm_api_key)",
+    )
+    embed_model: str = Field(
+        default="",
+        description="Embedding model name (empty = RAG disabled)",
+    )
+    rerank_model: str = Field(
+        default="",
+        description="Reranking model name (empty = no reranking)",
+    )
+    rerank_base_url: str = Field(
+        default="",
+        description="Reranker API base URL (empty = use embed_base_url)",
+    )
+    chunk_size: int = Field(
+        default=800,
+        gt=0,
+        description="RAG chunk size in characters",
+    )
+    chunk_overlap: int = Field(
+        default=150,
+        ge=0,
+        description="RAG chunk overlap in characters",
+    )
+    rag_top_k: int = Field(
+        default=5,
+        gt=0,
+        description="Number of RAG chunks to retrieve per query",
+    )
+
     # Behavior
     dry_run: bool = Field(
         default=False,
