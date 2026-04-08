@@ -22,11 +22,24 @@ class ChunkResult:
     text: str
 
 
+def _normalize_text(text: str) -> str:
+    """Normalize whitespace before chunking / embedding.
+    PDF tables often produce runs of spaces and mixed indentation that hurt embeddings.
+    """
+    text = text.replace("\t", " ")           # tabs → space
+    text = re.sub(r" {2,}", " ", text)       # collapse multiple spaces
+    lines = [line.rstrip() for line in text.splitlines()]
+    text = "\n".join(lines)
+    text = re.sub(r"\n{3,}", "\n\n", text)  # max 2 consecutive blank lines
+    return text.strip()
+
+
 def chunk_text(text: str, size: int = 800, overlap: int = 150) -> list[str]:
     """
     Split text into overlapping chunks at paragraph/sentence boundaries.
-    Tries to break at double-newlines, falls back to hard cuts.
+    Normalizes whitespace first so embeddings aren't polluted by PDF artifacts.
     """
+    text = _normalize_text(text)
     if len(text) <= size:
         return [text]
 

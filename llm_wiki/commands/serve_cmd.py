@@ -1,6 +1,9 @@
 """llm-wiki serve — local API server for Obsidian and other UIs."""
 
-from __future__ import annotations
+# NOTE: do NOT add `from __future__ import annotations` here.
+# FastAPI resolves route parameter types at decoration time; with the future import
+# every annotation becomes a string (ForwardRef) that can't be resolved for
+# locally-defined Pydantic models.
 
 import re
 from pathlib import Path
@@ -16,7 +19,7 @@ from llm_wiki.vault import Vault
 def run(vault: Vault, settings: Settings, host: str, port: int) -> None:
     try:
         import uvicorn
-        from fastapi import FastAPI, HTTPException, Query
+        from fastapi import Body, FastAPI, HTTPException, Query
         from fastapi.middleware.cors import CORSMiddleware
         from pydantic import BaseModel
     except ImportError:
@@ -116,49 +119,91 @@ def run(vault: Vault, settings: Settings, host: str, port: int) -> None:
         )
 
     @app.post("/ask", response_model=AskResponse, tags=["query"])
-    def ask(req: AskRequest):
+    def ask(
+        req: Optional[str] = Query(default=None, description="Question (shorthand query param)"),
+        question: Optional[str] = Body(default=None, embed=True, description="Question text"),
+        save: bool = Body(default=False, embed=True, description="Save answer to analyses/"),
+    ):
+        """Answer a question from the wiki (+ RAG if configured).
+
+        Accepts question via:
+        - Query param:  POST /ask?req=your+question
+        - JSON body:    POST /ask  {"question": "your question"}
+        """
+        q = req or question
+        if not q or not q.strip():
+            raise HTTPException(status_code=400, detail="Provide question via ?req=... or JSON body {\"question\":\"...\"}")
+
         if not vault.exists():
             raise HTTPException(status_code=503, detail="Vault not initialized")
 
         from llm_wiki.commands.ask_cmd import _find_relevant_pages, _ask_llm, _save_answer
         from llm_wiki.llm import LLMError
 
-        relevant = _find_relevant_pages(req.question, vault)
-        if not relevant:
+        # Wiki keyword search
+        relevant = _find_relevant_pages(q, vault)
+
+        # RAG retrieval (if configured)
+        rag_chunks = []
+        if settings.embed_model:
+            try:
+                from llm_wiki.embedder import EmbedClient
+                from llm_wiki.rag import RagIndex
+                embedder = EmbedClient(settings)
+                rag_index = RagIndex(vault)
+                q_emb = embedder.embed([q])
+                if q_emb:
+                    candidates = rag_index.search(q_emb[0], query_text=q, top_k=20)
+                    rag_chunks = rag_index.rerank_and_trim(q, candidates, embedder, top_k=5)
+            except Exception:
+                pass  # RAG failure is non-fatal
+
+        if not relevant and not rag_chunks:
             return AskResponse(
-                answer="No relevant wiki pages found.",
-                reasoning="The wiki does not contain pages matching your question. Try ingesting more sources.",
+                answer="No relevant content found.",
+                reasoning="The wiki has no pages matching your question. Try ingesting more sources.",
                 citations=[],
                 confidence="low",
                 gaps=["No relevant content indexed yet"],
                 pages_consulted=0,
             )
 
-        MAX_PAGES = 8
-        MAX_PAGE_CHARS = 6_000
+        MAX_PAGES = 6
+        MAX_PAGE_CHARS = 4_000
+        MAX_CHUNK_CHARS = 1_200
         context_parts = []
         consulted_paths = []
+
         for page_path in relevant[:MAX_PAGES]:
             try:
                 text = page_path.read_text(encoding="utf-8")[:MAX_PAGE_CHARS]
                 rel = str(page_path.relative_to(vault.wiki))
-                context_parts.append(f"### {rel}\n\n{text}")
+                context_parts.append(f"### [Wiki] {rel}\n\n{text}")
                 consulted_paths.append(rel)
             except Exception:
                 pass
 
+        if rag_chunks:
+            context_parts.append("### [Source Chunks]")
+            for chunk in rag_chunks:
+                context_parts.append(
+                    f"**Source:** `{chunk.source_id}` (chunk {chunk.chunk_idx}, score {chunk.score:.3f})\n\n"
+                    + chunk.text[:MAX_CHUNK_CHARS]
+                )
+                consulted_paths.append(f"chunks/{chunk.source_id}#{chunk.chunk_idx}")
+
         context = "\n\n---\n\n".join(context_parts)
 
         try:
-            result = _ask_llm(req.question, context, consulted_paths, vault.load_schema(), llm)
+            result = _ask_llm(q, context, consulted_paths, vault.load_schema(), llm)
         except LLMError as e:
             raise HTTPException(status_code=502, detail=f"LLM error: {e}")
 
-        if req.save:
+        if save:
             try:
-                _save_answer(req.question, result, vault)
+                _save_answer(q, result, vault)
             except Exception:
-                pass  # don't fail the response if save fails
+                pass
 
         return AskResponse(
             answer=result.answer,
