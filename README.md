@@ -15,7 +15,7 @@ Inspired by Andrej Karpathy's LLM Wiki pattern.
 - **Reranking** — optional cross-encoder reranker (Qwen3-Reranker, etc.) for better chunk ranking
 - **Lint** — detect orphan pages, dead links, duplicate slugs, missing sections, empty pages
 - **Q&A** — ask questions answered with citations from the wiki + RAG chunks; optionally save to `analyses/`
-- **Local API server** — `llm-wiki serve` exposes `/ask`, `/search`, `/pages` for Obsidian and other UIs
+- **MCP server** — `llm-wiki mcp` exposes `wiki_ask`, `wiki_search`, `wiki_page`, `wiki_status` tools for OpenCode, Claude Desktop, Cursor, Cline, and other MCP clients
 - **Dry-run support** — preview any destructive operation before running it
 - **Immutable raw files** — source files are write-protected once added
 
@@ -31,14 +31,17 @@ pip install ".[normalize]"
 # Full normalization: + PDF, Word, Excel, PowerPoint, images, audio
 pip install ".[normalize-full]"
 
-# With API server for Obsidian
-pip install ".[normalize,serve]"
+# With RAG support (numpy for embedding storage)
+pip install ".[rag]"
+
+# With MCP server for OpenCode, Claude Desktop, Cursor, Cline
+pip install ".[mcp]"
 
 # Everything
 pip install ".[all]"
 
 # Development
-pip install -e ".[normalize,serve,dev]"
+pip install -e ".[normalize,dev]"
 ```
 
 **Requirements:** Python 3.10+
@@ -118,6 +121,10 @@ Analyze the normalized content with the LLM and build/update wiki pages:
 4. Updates `wiki/index.md`
 5. Appends to `wiki/log.md`
 
+### `llm-wiki process [source-id] [--latest] [--all] [--dry-run]`
+Normalize, ingest, and embed a source in one step (shortcut for running all three commands sequentially).
+Auto-embeds if `LLM_WIKI_EMBED_MODEL` is set.
+
 ### `llm-wiki embed [source-id] [--all] [--force] [--dry-run]`
 Chunk and embed normalized sources for RAG retrieval.
 Requires `LLM_WIKI_EMBED_MODEL` to be set. Called automatically by `process` when configured.
@@ -152,38 +159,55 @@ Show vault health: source counts, normalization/ingestion status, recent log ent
 ### `llm-wiki log tail [-n N]`
 Show the N most recent log entries (newest first). Default: 20.
 
-### `llm-wiki serve [--host HOST] [--port PORT]`
-Start a local REST API server (default: `http://127.0.0.1:7432`).
+### `llm-wiki mcp [--http] [--host HOST] [--port PORT] [--token TOKEN]`
+Start an MCP server that exposes the wiki to AI coding assistants and chat clients.
 
+**Stdio mode** (local — for OpenCode, Claude Desktop, Cursor, Cline on the same machine):
 ```bash
-pip install -e ".[serve]"
-llm-wiki serve
-# → http://127.0.0.1:7432/docs  (Swagger UI)
+pip install ".[mcp]"
+llm-wiki mcp
 ```
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Health check |
-| `/status` | GET | Vault stats |
-| `/ask` | POST | Ask a question (JSON body: `{"question": "..."}`) |
-| `/search?q=...` | GET | Full-text search |
-| `/pages/{path}` | GET | Get a wiki page's content |
-| `/index` | GET | Get index.md content |
+**HTTP/SSE mode** (remote access from another machine):
+```bash
+llm-wiki mcp --http --port 8080 --token mysecrettoken
+# → SSE endpoint: http://<host>:8080/sse
+# → Health check: http://<host>:8080/health
+```
 
-#### Obsidian integration
+| MCP Tool | Description |
+|----------|-------------|
+| `wiki_ask` | Answer a question using wiki pages + RAG chunks |
+| `wiki_search` | Full-text keyword search across wiki pages |
+| `wiki_page` | Read a specific wiki page by path |
+| `wiki_status` | Show vault stats (sources, pages, embeddings) |
 
-**Option A — Shell Commands plugin:**
-1. Install [Shell Commands](https://github.com/Timo-Vehvilainen/obsidian-shellcommands) plugin
-2. Add command:
-   ```
-   curl -s -X POST http://127.0.0.1:7432/ask \
-     -H "Content-Type: application/json" \
-     -d '{"question":"{{selection}}"}' | jq -r '.answer'
-   ```
-3. Bind to a hotkey — select text in a note, press hotkey, get answer
+#### OpenCode / Claude Desktop config (stdio)
 
-**Option B — Obsidian Local REST API plugin:**
-Point it at `http://127.0.0.1:7432` to query the wiki from any Obsidian plugin or Templater script.
+```json
+{
+  "mcpServers": {
+    "my-wiki": {
+      "command": "llm-wiki",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+#### Remote HTTP/SSE config
+
+```json
+{
+  "mcpServers": {
+    "my-wiki": {
+      "type": "sse",
+      "url": "http://<server>:8080/sse",
+      "headers": {"Authorization": "Bearer mysecrettoken"}
+    }
+  }
+}
+```
 
 ## Configuration
 
@@ -321,6 +345,8 @@ llm_wiki/
 ├── config.py           # pydantic-settings configuration
 ├── llm.py              # LLM abstraction (OpenAI-compatible)
 ├── vault.py            # Vault operations
+├── embedder.py         # Embedding client (OpenAI-compatible)
+├── rag.py              # RAG index: chunking, vector search, reranking
 ├── schemas/
 │   └── models.py       # Pydantic models for structured outputs
 └── commands/
@@ -329,11 +355,13 @@ llm_wiki/
     ├── add_cmd.py
     ├── normalize_cmd.py
     ├── ingest_cmd.py
+    ├── embed_cmd.py
     ├── ask_cmd.py
     ├── search_cmd.py
     ├── lint_cmd.py
     ├── status_cmd.py
-    └── log_cmd.py
+    ├── log_cmd.py
+    └── mcp_cmd.py
 ```
 
 ## Design Notes
