@@ -310,6 +310,29 @@ def mcp(
 
 
 # ------------------------------------------------------------------ #
+#  web
+# ------------------------------------------------------------------ #
+
+@app.command()
+def web(
+    host: Annotated[str, typer.Option("--host", help="Bind address")] = "0.0.0.0",
+    port: Annotated[int, typer.Option("--port", "-p", help="Port")] = 7432,
+    token: Annotated[str, typer.Option("--token", help="Bearer token for auth")] = "",
+) -> None:
+    """Start the web UI + REST API + MCP HTTP/SSE server.
+
+    Opens a browser-accessible UI for managing sources, browsing the wiki,
+    asking questions, and monitoring MCP connections.
+
+    MCP SSE endpoint:  http://<host>:<port>/mcp/sse
+    """
+    settings = get_settings()
+    vault = _get_vault(settings)
+    from llm_wiki.commands.web_cmd import run
+    run(settings, vault, host=host, port=port, token=token)
+
+
+# ------------------------------------------------------------------ #
 #  log tail
 # ------------------------------------------------------------------ #
 

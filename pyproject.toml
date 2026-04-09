@@ -35,16 +35,19 @@ normalize-full = [
 ]
 # RAG support (numpy is now a core dep — this extra is kept for backwards compatibility)
 rag = []
-# MCP server for OpenCode, Claude Desktop, Cursor, Cline
-# uvicorn + starlette needed for --http (SSE) mode
+# MCP stdio server (local)
 mcp = ["mcp>=1.0.0", "uvicorn>=0.29.0", "starlette>=0.37.0"]
+# Web UI + REST API + MCP HTTP/SSE (browser access + remote MCP)
+web = ["fastapi>=0.111.0", "uvicorn>=0.29.0", "starlette>=0.37.0", "python-multipart>=0.0.9", "mcp>=1.0.0"]
 # Install everything
 all = [
     "markitdown[all]>=0.1.0",
     "pypdf>=4.0.0",
     "mcp>=1.0.0",
+    "fastapi>=0.111.0",
     "uvicorn>=0.29.0",
     "starlette>=0.37.0",
+    "python-multipart>=0.0.9",
 ]
 # Development and testing
 dev = [
