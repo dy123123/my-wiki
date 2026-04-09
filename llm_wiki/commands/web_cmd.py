@@ -591,13 +591,13 @@ def _ui_html(settings: Settings, port: int) -> str:
 <body class="bg-gray-950 text-gray-100 min-h-screen font-mono text-sm">
 
 <!-- Login overlay -->
-<div id="login-overlay" class="hidden fixed inset-0 bg-gray-950 flex items-center justify-center z-50">
+<div id="login-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:#030712;z-index:9999;align-items:center;justify-content:center;">
   <div class="bg-gray-900 border border-gray-700 rounded-lg p-8 w-80">
     <h1 class="text-blue-400 font-bold text-xl mb-6">llm-wiki</h1>
     <input id="login-tok" type="password" placeholder="Access token"
       class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm mb-3 focus:border-blue-500 outline-none"
       onkeydown="if(event.key==='Enter')doLoginSubmit()">
-    <p id="login-err" class="text-red-400 text-xs mb-2 hidden">Invalid token.</p>
+    <p id="login-err" style="display:none;color:#f87171;font-size:.75rem;margin-bottom:.5rem;">Invalid token.</p>
     <button onclick="doLoginSubmit()" class="w-full bg-blue-600 hover:bg-blue-700 py-2 rounded text-sm">Login</button>
   </div>
 </div>
@@ -738,11 +738,12 @@ async function apiFetch(url, opts={}) {
 }
 
 function showLogin() {
-  document.getElementById('login-overlay').classList.remove('hidden');
+  const el = document.getElementById('login-overlay');
+  el.style.display = 'flex';
 }
 
 function hideLogin() {
-  document.getElementById('login-overlay').classList.add('hidden');
+  document.getElementById('login-overlay').style.display = 'none';
 }
 
 async function doLoginSubmit() {
@@ -758,9 +759,9 @@ async function doLoginSubmit() {
     AUTH_TOKEN = t;
     localStorage.setItem('wiki_token', t);
     hideLogin();
-    init();
+    appInit();
   } else {
-    document.getElementById('login-err').classList.remove('hidden');
+    document.getElementById('login-err').style.display = 'block';
   }
 }
 
@@ -1028,16 +1029,18 @@ async function refreshMcpStatus() {
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────
-(async () => {
+async function appInit() {
   try {
     const r = await fetch(API+'/health');
     const d = await r.json();
     document.getElementById('vault-path').textContent = d.vault || '';
   } catch(e) {}
-  loadSources();
+  try { await loadSources(); } catch(e) {}
   refreshMcpStatus();
   setInterval(refreshMcpStatus, 5000);
-})();
+}
+
+appInit();
 </script>
 </body>
 </html>"""
