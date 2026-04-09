@@ -112,19 +112,20 @@ def run(
     # Auth middleware
     # ------------------------------------------------------------------ #
 
+    # Paths that never require auth
+    _open_paths = {"/health", "/mcp/health", "/api/login"}
+
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
         if not token:
             return await call_next(request)
-        # Allow health check without token
-        if request.url.path in ("/mcp/health", "/health"):
+        if request.url.path in _open_paths:
             return await call_next(request)
         auth = request.headers.get("Authorization", "")
-        # Allow browser cookie session (simple)
         cookie = request.cookies.get("wiki_token", "")
         if auth == f"Bearer {token}" or cookie == token:
             return await call_next(request)
-        # Redirect browser to login page
+        # Browser: show login page
         if "text/html" in request.headers.get("accept", ""):
             return HTMLResponse(_login_html(port), status_code=200)
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
