@@ -619,6 +619,7 @@ def _ui_html(settings: Settings, port: int) -> str:
   <button onclick="showTab('sources')" id="tab-sources" class="px-4 py-2 text-gray-400 hover:text-gray-200 tab-active">Sources</button>
   <button onclick="showTab('wiki')" id="tab-wiki" class="px-4 py-2 text-gray-400 hover:text-gray-200">Wiki</button>
   <button onclick="showTab('ask')" id="tab-ask" class="px-4 py-2 text-gray-400 hover:text-gray-200">Ask</button>
+  <button onclick="showTab('connect')" id="tab-connect" class="px-4 py-2 text-gray-400 hover:text-gray-200">Connect</button>
 </div>
 
 <!-- Sources -->
@@ -647,6 +648,67 @@ def _ui_html(settings: Settings, port: int) -> str:
       <pre id="wiki-content" class="text-xs text-gray-300 bg-gray-900 rounded p-4 max-h-screen overflow-y-auto"></pre>
     </div>
   </div>
+</div>
+
+<!-- Connect -->
+<div id="pane-connect" class="p-5 hidden max-w-2xl">
+  <h2 class="text-base font-bold text-gray-200 mb-4">MCP 연결 설정</h2>
+
+  <div class="mb-6">
+    <p class="text-gray-400 text-xs mb-2">현재 서버 주소:</p>
+    <code id="server-url" class="text-green-400 bg-gray-900 px-3 py-1 rounded text-sm"></code>
+  </div>
+
+  <div class="space-y-5">
+    <!-- OpenCode -->
+    <div class="bg-gray-900 rounded-lg p-4 border border-gray-800">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="text-base">⚡</span>
+        <span class="font-semibold text-gray-200">OpenCode</span>
+      </div>
+      <p class="text-gray-500 text-xs mb-2">프로젝트 루트 또는 <code class="text-green-400">~/.config/opencode/config.json</code></p>
+      <pre id="cfg-opencode" class="bg-gray-800 rounded p-3 text-xs text-gray-300 overflow-x-auto cursor-pointer hover:bg-gray-700" onclick="copyText('cfg-opencode')" title="클릭해서 복사"></pre>
+      <p class="text-gray-600 text-xs mt-1">클릭해서 복사</p>
+    </div>
+
+    <!-- Claude Desktop -->
+    <div class="bg-gray-900 rounded-lg p-4 border border-gray-800">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="text-base">🤖</span>
+        <span class="font-semibold text-gray-200">Claude Desktop</span>
+      </div>
+      <p class="text-gray-500 text-xs mb-2">
+        Mac: <code class="text-green-400">~/Library/Application Support/Claude/claude_desktop_config.json</code><br>
+        Win: <code class="text-green-400">%APPDATA%/Claude/claude_desktop_config.json</code>
+      </p>
+      <pre id="cfg-claude" class="bg-gray-800 rounded p-3 text-xs text-gray-300 overflow-x-auto cursor-pointer hover:bg-gray-700" onclick="copyText('cfg-claude')" title="클릭해서 복사"></pre>
+      <p class="text-gray-600 text-xs mt-1">클릭해서 복사</p>
+    </div>
+
+    <!-- Cursor / Cline -->
+    <div class="bg-gray-900 rounded-lg p-4 border border-gray-800">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="text-base">🖱</span>
+        <span class="font-semibold text-gray-200">Cursor / Cline / 기타 MCP 클라이언트</span>
+      </div>
+      <p class="text-gray-500 text-xs mb-2">MCP Settings → Add Server → SSE</p>
+      <pre id="cfg-cursor" class="bg-gray-800 rounded p-3 text-xs text-gray-300 overflow-x-auto cursor-pointer hover:bg-gray-700" onclick="copyText('cfg-cursor')" title="클릭해서 복사"></pre>
+      <p class="text-gray-600 text-xs mt-1">클릭해서 복사</p>
+    </div>
+
+    <!-- MCP Tools -->
+    <div class="bg-gray-900 rounded-lg p-4 border border-gray-800">
+      <p class="font-semibold text-gray-200 mb-3">사용 가능한 MCP 툴</p>
+      <div class="space-y-2 text-xs">
+        <div class="flex gap-3"><code class="text-blue-400 w-32 flex-shrink-0">wiki_ask</code><span class="text-gray-400">위키 + RAG 기반 질문 답변</span></div>
+        <div class="flex gap-3"><code class="text-blue-400 w-32 flex-shrink-0">wiki_search</code><span class="text-gray-400">위키 전문 키워드 검색</span></div>
+        <div class="flex gap-3"><code class="text-blue-400 w-32 flex-shrink-0">wiki_page</code><span class="text-gray-400">특정 위키 페이지 읽기</span></div>
+        <div class="flex gap-3"><code class="text-blue-400 w-32 flex-shrink-0">wiki_status</code><span class="text-gray-400">볼트 상태 조회</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="copy-toast" class="hidden fixed bottom-4 right-4 bg-green-700 text-white px-4 py-2 rounded text-sm">복사됨!</div>
 </div>
 
 <!-- Ask -->
@@ -704,12 +766,45 @@ let pollTimers = {};
 
 // ── Tabs ──────────────────────────────────────────────────────────────────
 function showTab(name) {
-  ['sources','wiki','ask'].forEach(t => {
+  ['sources','wiki','ask','connect'].forEach(t => {
     document.getElementById('pane-'+t).classList.toggle('hidden', t !== name);
     document.getElementById('tab-'+t).classList.toggle('tab-active', t === name);
   });
   if (name === 'sources') loadSources();
   if (name === 'wiki') loadWikiTree();
+  if (name === 'connect') renderConnectCfg();
+}
+
+// ── Connect ───────────────────────────────────────────────────────────────
+function renderConnectCfg() {
+  const base = window.location.origin;
+  const sseUrl = base + '/mcp/sse';
+  const tok = AUTH_TOKEN;
+
+  document.getElementById('server-url').textContent = sseUrl;
+
+  const headers = tok ? `,\n      "headers": {"Authorization": "Bearer ${tok}"}` : '';
+  const cfgSse = JSON.stringify({
+    mcpServers: {"my-wiki": {"type":"sse","url":sseUrl, ...(tok?{headers:{"Authorization":"Bearer "+tok}}:{})}}
+  }, null, 2);
+
+  const cfgOpencode = JSON.stringify({
+    mcpServers: {"my-wiki": {"type":"sse","url":sseUrl, ...(tok?{headers:{"Authorization":"Bearer "+tok}}:{})}}
+  }, null, 2);
+
+  document.getElementById('cfg-opencode').textContent = cfgOpencode;
+  document.getElementById('cfg-claude').textContent = cfgOpencode;
+  document.getElementById('cfg-cursor').textContent =
+    `URL:  ${sseUrl}\nType: SSE${tok ? '\nHeader: Authorization: Bearer ' + tok : ''}`;
+}
+
+function copyText(elId) {
+  const text = document.getElementById(elId).textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    const toast = document.getElementById('copy-toast');
+    toast.classList.remove('hidden');
+    setTimeout(() => toast.classList.add('hidden'), 2000);
+  });
 }
 
 // ── Sources ───────────────────────────────────────────────────────────────
