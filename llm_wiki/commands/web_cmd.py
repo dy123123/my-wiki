@@ -863,21 +863,21 @@ async function loadSources() {
 }
 
 function sourceRow(s) {
-  const b = (ok, label) => `<span class="px-1.5 py-0.5 rounded text-xs font-bold ${ok ? 'badge-ok' : 'badge-no'}">${label}</span>`;
+  const dot = ok => `<span style="width:8px;height:8px;border-radius:50%;display:inline-block;background:${ok?'#16a34a':'#374151'};margin-right:3px"></span>`;
   return `<div class="flex items-center gap-3 py-2 border-b border-gray-800" id="row-${s.source_id}">
     <div class="flex-1 min-w-0">
       <p class="truncate text-gray-200">${s.title || s.original_name}</p>
-      <p class="text-gray-500 text-xs">${s.source_id} · ${s.added_at.slice(0,10)}</p>
+      <p class="text-xs" style="color:#6b7280">${s.source_id} · ${s.added_at.slice(0,10)}</p>
     </div>
-    <div class="flex gap-1 items-center flex-shrink-0">
-      ${b(s.normalized,'N')} ${b(s.ingested,'I')} ${b(s.embedded,'E')}
+    <div class="flex gap-2 items-center flex-shrink-0 text-xs" style="color:#9ca3af">
+      ${dot(s.normalized)}N &nbsp;${dot(s.ingested)}I &nbsp;${dot(s.embedded)}E
     </div>
     <div class="flex gap-1 flex-shrink-0">
-      <button onclick="runStep('${s.source_id}','process')" class="px-2 py-1 bg-blue-700 hover:bg-blue-600 rounded text-xs">Process</button>
-      <button onclick="runStep('${s.source_id}','normalize')" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs">N</button>
-      <button onclick="runStep('${s.source_id}','ingest')" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs">I</button>
-      <button onclick="runStep('${s.source_id}','embed')" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs">E</button>
-      <button onclick="deleteSource('${s.source_id}')" class="px-2 py-1 bg-red-900 hover:bg-red-700 rounded text-xs">✕</button>
+      <button onclick="runStep('${s.source_id}','process')" class="px-2 py-1 rounded text-xs" style="background:#1d4ed8">All</button>
+      <button onclick="runStep('${s.source_id}','normalize')" class="px-2 py-1 rounded text-xs" style="background:#374151">1. Normalize</button>
+      <button onclick="runStep('${s.source_id}','ingest')" class="px-2 py-1 rounded text-xs" style="background:#374151">2. Ingest</button>
+      <button onclick="runStep('${s.source_id}','embed')" class="px-2 py-1 rounded text-xs" style="background:#374151">3. Embed</button>
+      <button onclick="deleteSource('${s.source_id}')" class="px-2 py-1 rounded text-xs" style="background:#7f1d1d">Del</button>
     </div>
   </div>`;
 }
