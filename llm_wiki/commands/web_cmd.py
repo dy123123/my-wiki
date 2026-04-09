@@ -112,24 +112,22 @@ def run(
     # Auth middleware
     # ------------------------------------------------------------------ #
 
-    # Paths that never require auth
-    _open_paths = {"/health", "/mcp/health", "/api/login"}
-
+    # Auth: UI and static routes are always open.
+    # Only /api/* and /mcp/* (except /mcp/health) require Bearer token.
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
         if not token:
             return await call_next(request)
-        if request.url.path in _open_paths:
+        path = request.url.path
+        # Open paths (no auth needed)
+        if path in ("/", "/health", "/mcp/health", "/api/login"):
             return await call_next(request)
-        from urllib.parse import unquote
-        auth = request.headers.get("Authorization", "")
-        cookie = unquote(request.cookies.get("wiki_token", ""))
-        if auth == f"Bearer {token}" or cookie == token:
-            return await call_next(request)
-        # Browser: show login page
-        if "text/html" in request.headers.get("accept", ""):
-            return HTMLResponse(_login_html(port), status_code=200)
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        # Protected API + MCP paths
+        if path.startswith("/api/") or path.startswith("/mcp/"):
+            auth = request.headers.get("Authorization", "")
+            if auth != f"Bearer {token}":
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        return await call_next(request)
 
     # ------------------------------------------------------------------ #
     # Web UI
@@ -141,11 +139,12 @@ def run(
 
     @app.post("/api/login")
     async def login(request: Request):
+        # Verify token — caller already includes Bearer header via middleware bypass
         body = await request.json()
         t = body.get("token", "")
         if t == token:
             return JSONResponse({"ok": True})
-        return JSONResponse({"ok": False, "error": "Invalid token"}, status_code=401)
+        return JSONResponse({"ok": False}, status_code=401)
 
     # ------------------------------------------------------------------ #
     # Sources API
@@ -568,35 +567,9 @@ def _build_mcp_server(vault, llm, embedder, rag_index, mcp_types):
 # ---------------------------------------------------------------------------
 
 def _login_html(port: int, error: bool = False) -> str:
-    return """<!DOCTYPE html><html><head><title>llm-wiki login</title>
-<meta charset="UTF-8"><script src="https://cdn.tailwindcss.com"></script></head>
-<body class="bg-gray-950 text-gray-100 min-h-screen flex items-center justify-center font-mono">
-<div class="bg-gray-900 border border-gray-700 rounded-lg p-8 w-80">
-  <h1 class="text-blue-400 font-bold text-xl mb-6">llm-wiki</h1>
-  <input id="tok" type="password" placeholder="Access token"
-    class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm mb-3 focus:border-blue-500 outline-none"
-    onkeydown="if(event.key==='Enter')doLogin()">
-  <p id="err" class="text-red-400 text-sm mb-2 hidden">Invalid token.</p>
-  <button onclick="doLogin()" class="w-full bg-blue-600 hover:bg-blue-700 py-2 rounded text-sm">Login</button>
-</div>
-<script>
-async function doLogin() {
-  const t = document.getElementById('tok').value.trim();
-  if (!t) return;
-  const r = await fetch('/api/login', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({token: t})
-  });
-  if (r.ok) {
-    document.cookie = 'wiki_token=' + encodeURIComponent(t) + '; path=/; SameSite=Strict';
-    window.location.href = '/';
-  } else {
-    document.getElementById('err').classList.remove('hidden');
-  }
-}
-</script>
-</body></html>"""
+    # The main UI handles login via localStorage — this function is kept for compat
+    # but the real login overlay is embedded in _ui_html
+    return _ui_html(None, port)
 
 
 def _ui_html(settings: Settings, port: int) -> str:
@@ -616,6 +589,18 @@ def _ui_html(settings: Settings, port: int) -> str:
 </style>
 </head>
 <body class="bg-gray-950 text-gray-100 min-h-screen font-mono text-sm">
+
+<!-- Login overlay -->
+<div id="login-overlay" class="hidden fixed inset-0 bg-gray-950 flex items-center justify-center z-50">
+  <div class="bg-gray-900 border border-gray-700 rounded-lg p-8 w-80">
+    <h1 class="text-blue-400 font-bold text-xl mb-6">llm-wiki</h1>
+    <input id="login-tok" type="password" placeholder="Access token"
+      class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm mb-3 focus:border-blue-500 outline-none"
+      onkeydown="if(event.key==='Enter')doLoginSubmit()">
+    <p id="login-err" class="text-red-400 text-xs mb-2 hidden">Invalid token.</p>
+    <button onclick="doLoginSubmit()" class="w-full bg-blue-600 hover:bg-blue-700 py-2 rounded text-sm">Login</button>
+  </div>
+</div>
 
 <!-- Header -->
 <header class="border-b border-gray-800 px-6 py-3 flex items-center justify-between">
@@ -676,6 +661,44 @@ def _ui_html(settings: Settings, port: int) -> str:
 </div>
 
 <script>
+// ── Auth ──────────────────────────────────────────────────────────────────
+let AUTH_TOKEN = localStorage.getItem('wiki_token') || '';
+
+async function apiFetch(url, opts={}) {
+  const headers = {'Content-Type':'application/json', ...(opts.headers||{})};
+  if (AUTH_TOKEN) headers['Authorization'] = 'Bearer ' + AUTH_TOKEN;
+  const r = await fetch(url, {...opts, headers});
+  if (r.status === 401) { showLogin(); throw new Error('Unauthorized'); }
+  return r;
+}
+
+function showLogin() {
+  document.getElementById('login-overlay').classList.remove('hidden');
+}
+
+function hideLogin() {
+  document.getElementById('login-overlay').classList.add('hidden');
+}
+
+async function doLoginSubmit() {
+  const t = document.getElementById('login-tok').value.trim();
+  if (!t) return;
+  // Try the token
+  const r = await fetch('/api/login', {
+    method:'POST',
+    headers:{'Content-Type':'application/json', 'Authorization':'Bearer '+t},
+    body: JSON.stringify({token: t})
+  });
+  if (r.ok) {
+    AUTH_TOKEN = t;
+    localStorage.setItem('wiki_token', t);
+    hideLogin();
+    init();
+  } else {
+    document.getElementById('login-err').classList.remove('hidden');
+  }
+}
+
 const API = '';
 let pollTimers = {};
 
