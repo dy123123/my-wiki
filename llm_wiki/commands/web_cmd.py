@@ -801,7 +801,7 @@ function renderConnectCfg() {
   document.getElementById('cfg-opencode').textContent = cfgOpencode;
   document.getElementById('cfg-claude').textContent = cfgOpencode;
   document.getElementById('cfg-cursor').textContent =
-    `URL:  ${sseUrl}\nType: SSE${tok ? '\nHeader: Authorization: Bearer ' + tok : ''}`;
+    `URL:  ${sseUrl}\\nType: SSE${tok ? '\\nHeader: Authorization: Bearer ' + tok : ''}`;
 }
 
 function copyText(elId) {
