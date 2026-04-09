@@ -727,8 +727,11 @@ def _ui_html(settings: Settings, port: int) -> str:
 let AUTH_TOKEN = localStorage.getItem('wiki_token') || '';
 
 async function apiFetch(url, opts={}) {
-  const headers = {'Content-Type':'application/json', ...(opts.headers||{})};
+  const headers = {...(opts.headers||{})};
   if (AUTH_TOKEN) headers['Authorization'] = 'Bearer ' + AUTH_TOKEN;
+  if (!(opts.body instanceof FormData) && !headers['Content-Type']) {
+    headers['Content-Type'] = 'application/json';
+  }
   const r = await fetch(url, {...opts, headers});
   if (r.status === 401) { showLogin(); throw new Error('Unauthorized'); }
   return r;
@@ -809,7 +812,7 @@ function copyText(elId) {
 
 // ── Sources ───────────────────────────────────────────────────────────────
 async function loadSources() {
-  const r = await fetch(API+'/api/sources');
+  const r = await apiFetch(API+'/api/sources');
   const {sources} = await r.json();
   const el = document.getElementById('source-list');
   if (!sources.length) { el.innerHTML = '<p class="text-gray-500">No sources yet. Upload a file above.</p>'; return; }
@@ -840,7 +843,7 @@ async function runStep(sourceId, step) {
   const url = step === 'process'
     ? `/api/sources/${sourceId}/process`
     : `/api/sources/${sourceId}/${step}`;
-  const r = await fetch(API+url, {method:'POST'});
+  const r = await apiFetch(API+url, {method:'POST'});
   const {task_id} = await r.json();
   pollTask(task_id, sourceId);
 }
@@ -849,7 +852,7 @@ function pollTask(taskId, sourceId) {
   if (pollTimers[taskId]) clearInterval(pollTimers[taskId]);
   setRowStatus(sourceId, 'running');
   pollTimers[taskId] = setInterval(async () => {
-    const r = await fetch(API+`/api/tasks/${taskId}`);
+    const r = await apiFetch(API+`/api/tasks/${taskId}`);
     const t = await r.json();
     setRowMsg(sourceId, t.message);
     if (t.status === 'done' || t.status === 'error') {
@@ -876,7 +879,7 @@ function setRowMsg(sourceId, msg) {
 
 async function deleteSource(sourceId) {
   if (!confirm(`Delete ${sourceId}?`)) return;
-  await fetch(API+`/api/sources/${sourceId}`, {method:'DELETE'});
+  await apiFetch(API+`/api/sources/${sourceId}`, {method:'DELETE'});
   await loadSources();
 }
 
@@ -884,7 +887,7 @@ async function uploadFiles(files) {
   for (const file of files) {
     const fd = new FormData();
     fd.append('file', file);
-    const r = await fetch(API+'/api/sources/upload', {method:'POST', body:fd});
+    const r = await apiFetch(API+'/api/sources/upload', {method:'POST', body:fd});
     const data = await r.json();
     await loadSources();
     if (data.task_id) pollTask(data.task_id, data.source_id);
@@ -901,7 +904,7 @@ function handleDrop(ev) {
 let _currentPageDir = '';
 
 async function loadWikiTree() {
-  const r = await fetch(API+'/api/wiki');
+  const r = await apiFetch(API+'/api/wiki');
   const {pages} = await r.json();
   const tree = document.getElementById('wiki-tree');
 
@@ -951,7 +954,7 @@ function toggleDir(id) {
 async function loadWikiPage(path) {
   document.getElementById('wiki-page-path').textContent = path;
   _currentPageDir = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
-  const r = await fetch(API+`/api/wiki/${path}`);
+  const r = await apiFetch(API+`/api/wiki/${path}`);
   const {content} = await r.json();
   // Render markdown links as clickable
   const html = renderWikiContent(content, path);
@@ -995,8 +998,8 @@ async function doAsk() {
   if (!q) return;
   const el = document.getElementById('ask-result');
   el.innerHTML = '<p class="text-yellow-400">Thinking…</p>';
-  const r = await fetch(API+'/api/ask', {
-    method:'POST', headers:{'Content-Type':'application/json'},
+  const r = await apiFetch(API+'/api/ask', {
+    method:'POST',
     body: JSON.stringify({question:q})
   });
   const d = await r.json();
@@ -1013,7 +1016,7 @@ async function doAsk() {
 // ── MCP status ────────────────────────────────────────────────────────────
 async function refreshMcpStatus() {
   try {
-    const r = await fetch(API+'/api/mcp/status');
+    const r = await apiFetch(API+'/api/mcp/status');
     const d = await r.json();
     const dot = document.getElementById('mcp-dot');
     const label = document.getElementById('mcp-label');
