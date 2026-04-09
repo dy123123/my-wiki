@@ -580,6 +580,8 @@ def _ui_html(settings: Settings, port: int) -> str:
 <title>llm-wiki</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
+  /* Fallback so .hidden works even if Tailwind CDN fails to load */
+  .hidden { display: none !important; }
   .tab-active { border-bottom: 2px solid #3b82f6; color: #60a5fa; }
   .badge-ok { background:#16a34a; }
   .badge-no { background:#374151; color:#6b7280; }
