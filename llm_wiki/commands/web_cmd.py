@@ -121,8 +121,9 @@ def run(
             return await call_next(request)
         if request.url.path in _open_paths:
             return await call_next(request)
+        from urllib.parse import unquote
         auth = request.headers.get("Authorization", "")
-        cookie = request.cookies.get("wiki_token", "")
+        cookie = unquote(request.cookies.get("wiki_token", ""))
         if auth == f"Bearer {token}" or cookie == token:
             return await call_next(request)
         # Browser: show login page
@@ -140,14 +141,11 @@ def run(
 
     @app.post("/api/login")
     async def login(request: Request):
-        form = await request.form()
-        t = form.get("token", "")
+        body = await request.json()
+        t = body.get("token", "")
         if t == token:
-            from fastapi.responses import RedirectResponse
-            resp = RedirectResponse("/", status_code=302)
-            resp.set_cookie("wiki_token", token, httponly=True, samesite="strict")
-            return resp
-        return HTMLResponse(_login_html(port, error=True), status_code=200)
+            return JSONResponse({"ok": True})
+        return JSONResponse({"ok": False, "error": "Invalid token"}, status_code=401)
 
     # ------------------------------------------------------------------ #
     # Sources API
@@ -570,19 +568,35 @@ def _build_mcp_server(vault, llm, embedder, rag_index, mcp_types):
 # ---------------------------------------------------------------------------
 
 def _login_html(port: int, error: bool = False) -> str:
-    err = '<p class="text-red-400 text-sm mt-2">Invalid token.</p>' if error else ""
-    return f"""<!DOCTYPE html><html><head><title>llm-wiki login</title>
+    return """<!DOCTYPE html><html><head><title>llm-wiki login</title>
 <meta charset="UTF-8"><script src="https://cdn.tailwindcss.com"></script></head>
 <body class="bg-gray-950 text-gray-100 min-h-screen flex items-center justify-center font-mono">
 <div class="bg-gray-900 border border-gray-700 rounded-lg p-8 w-80">
   <h1 class="text-blue-400 font-bold text-xl mb-6">llm-wiki</h1>
-  <form method="POST" action="/api/login">
-    <input name="token" type="password" placeholder="Access token"
-      class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm mb-3 focus:border-blue-500 outline-none">
-    {err}
-    <button class="w-full bg-blue-600 hover:bg-blue-700 py-2 rounded text-sm mt-2">Login</button>
-  </form>
-</div></body></html>"""
+  <input id="tok" type="password" placeholder="Access token"
+    class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm mb-3 focus:border-blue-500 outline-none"
+    onkeydown="if(event.key==='Enter')doLogin()">
+  <p id="err" class="text-red-400 text-sm mb-2 hidden">Invalid token.</p>
+  <button onclick="doLogin()" class="w-full bg-blue-600 hover:bg-blue-700 py-2 rounded text-sm">Login</button>
+</div>
+<script>
+async function doLogin() {
+  const t = document.getElementById('tok').value.trim();
+  if (!t) return;
+  const r = await fetch('/api/login', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({token: t})
+  });
+  if (r.ok) {
+    document.cookie = 'wiki_token=' + encodeURIComponent(t) + '; path=/; SameSite=Strict';
+    window.location.href = '/';
+  } else {
+    document.getElementById('err').classList.remove('hidden');
+  }
+}
+</script>
+</body></html>"""
 
 
 def _ui_html(settings: Settings, port: int) -> str:
