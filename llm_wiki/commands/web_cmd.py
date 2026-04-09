@@ -803,20 +803,95 @@ function handleDrop(ev) {
 }
 
 // ── Wiki ──────────────────────────────────────────────────────────────────
+let _currentPageDir = '';
+
 async function loadWikiTree() {
   const r = await fetch(API+'/api/wiki');
   const {pages} = await r.json();
   const tree = document.getElementById('wiki-tree');
-  tree.innerHTML = pages.map(p =>
-    `<div class="py-0.5 cursor-pointer hover:text-blue-400 truncate" onclick="loadWikiPage('${p.path}')">${p.path}</div>`
-  ).join('');
+
+  // Group by directory
+  const dirs = {};
+  for (const p of pages) {
+    const parts = p.path.split('/');
+    const dir = parts.length > 1 ? parts[0] : '';
+    const name = parts[parts.length - 1];
+    if (!dirs[dir]) dirs[dir] = [];
+    dirs[dir].push({path: p.path, name});
+  }
+
+  const dirOrder = ['sources','entities','concepts','topics','analyses','reports',''];
+  const sortedDirs = [...new Set([...dirOrder, ...Object.keys(dirs)])].filter(d => dirs[d]);
+
+  const icons = {sources:'📄', entities:'👤', concepts:'💡', topics:'🏷', analyses:'🔍', reports:'📊', '':'📁'};
+  tree.innerHTML = sortedDirs.map(dir => {
+    const files = dirs[dir] || [];
+    const icon = icons[dir] || '📁';
+    const label = dir || 'root';
+    const id = 'dir-'+label;
+    const items = files.map(f =>
+      `<div class="pl-4 py-0.5 cursor-pointer hover:text-blue-400 truncate text-gray-400"
+        onclick="loadWikiPage('${f.path}')" title="${f.path}">${f.name.replace('.md','')}</div>`
+    ).join('');
+    return `<div class="mb-1">
+      <div class="flex items-center gap-1 cursor-pointer hover:text-gray-200 py-0.5 text-gray-300 font-semibold select-none"
+        onclick="toggleDir('${id}')">
+        <span id="arr-${id}" class="text-xs">▾</span>
+        <span>${icon} ${label}</span>
+        <span class="text-gray-600 text-xs ml-1">${files.length}</span>
+      </div>
+      <div id="${id}">${items}</div>
+    </div>`;
+  }).join('');
+}
+
+function toggleDir(id) {
+  const el = document.getElementById(id);
+  const arr = document.getElementById('arr-'+id);
+  const hidden = el.style.display === 'none';
+  el.style.display = hidden ? '' : 'none';
+  arr.textContent = hidden ? '▾' : '▸';
 }
 
 async function loadWikiPage(path) {
   document.getElementById('wiki-page-path').textContent = path;
+  _currentPageDir = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
   const r = await fetch(API+`/api/wiki/${path}`);
   const {content} = await r.json();
-  document.getElementById('wiki-content').textContent = content;
+  // Render markdown links as clickable
+  const html = renderWikiContent(content, path);
+  document.getElementById('wiki-content').innerHTML = html;
+}
+
+function renderWikiContent(text, currentPath) {
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  // Resolve relative links based on current page dir
+  const baseDir = currentPath.includes('/') ? currentPath.substring(0, currentPath.lastIndexOf('/')) : '';
+
+  return esc(text)
+    // Bold **text**
+    .replace(/\*\*([^*]+)\*\*/g, '<strong class="text-white">$1</strong>')
+    // Headers
+    .replace(/^(#{1,3}) (.+)$/gm, (_, hashes, title) => {
+      const size = hashes.length === 1 ? 'text-lg' : hashes.length === 2 ? 'text-base' : 'text-sm';
+      return `<span class="block ${size} font-bold text-blue-300 mt-3 mb-1">${title}</span>`;
+    })
+    // Code `inline`
+    .replace(/`([^`]+)`/g, '<code class="bg-gray-800 px-1 rounded text-green-400">$1</code>')
+    // Markdown links [text](path)
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, href) => {
+      if (href.startsWith('http')) {
+        return `<a href="${href}" target="_blank" class="text-blue-400 hover:underline">${label}</a>`;
+      }
+      // Resolve relative path
+      let resolved = href.replace(/^\.\.\//, baseDir.includes('/') ? baseDir.substring(0, baseDir.lastIndexOf('/'))+'/' : '')
+                        .replace(/^\.\//, baseDir ? baseDir+'/' : '');
+      // Strip leading ../ chains
+      resolved = resolved.replace(/^(\.\.\/)+/, '');
+      // Remove .md if present, add back for API call
+      const apiPath = resolved.endsWith('.md') ? resolved : resolved + '.md';
+      return `<span class="text-blue-400 hover:underline cursor-pointer" onclick="loadWikiPage('${apiPath}')">${label}</span>`;
+    });
 }
 
 // ── Ask ───────────────────────────────────────────────────────────────────
