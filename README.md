@@ -1,374 +1,140 @@
 # llm-wiki
 
-An LLM-maintained local markdown wiki. Add documents, let the LLM analyze them, and build a structured knowledge base you can query, search, and audit — all stored as plain git-friendly markdown files.
+LLM이 관리하는 로컬 마크다운 위키. 문서를 업로드하면 LLM이 분석해서 위키를 자동으로 구성하고, 웹 UI와 MCP를 통해 AI 코딩 어시스턴트에서 바로 질문할 수 있습니다.
 
-Inspired by Andrej Karpathy's LLM Wiki pattern.
+## 빠른 시작
 
-## Features
-
-- **Any OpenAI-compatible LLM** — OpenAI, Ollama, LM Studio, vLLM, Anthropic-compatible proxies
-- **markitdown** — automatic conversion of PDF, Word, Excel, PowerPoint, HTML, images, audio, and more
-- **Structured extraction** — entities, concepts, topics, and tags extracted via JSON-mode LLM calls
-- **Incremental ingestion** — re-ingest a source to update existing wiki pages without duplication
-- **Full-text search** — keyword search across all wiki pages
-- **RAG retrieval** — chunk + embed sources; `ask` searches wiki pages first, then retrieves precise chunks from raw documents (register addresses, specs, exact values)
-- **Reranking** — optional cross-encoder reranker (Qwen3-Reranker, etc.) for better chunk ranking
-- **Lint** — detect orphan pages, dead links, duplicate slugs, missing sections, empty pages
-- **Q&A** — ask questions answered with citations from the wiki + RAG chunks; optionally save to `analyses/`
-- **MCP server** — `llm-wiki mcp` exposes `wiki_ask`, `wiki_search`, `wiki_page`, `wiki_status` tools for OpenCode, Claude Desktop, Cursor, Cline, and other MCP clients
-- **Dry-run support** — preview any destructive operation before running it
-- **Immutable raw files** — source files are write-protected once added
-
-## Installation
+### 1. 설치
 
 ```bash
-# Minimal install (no markitdown — plain text sources only)
-pip install .
-
-# Recommended: basic normalization (text, HTML, CSV, XML)
-pip install ".[normalize]"
-
-# Full normalization: + PDF, Word, Excel, PowerPoint, images, audio
-pip install ".[normalize-full]"
-
-# With RAG support (numpy for embedding storage)
-pip install ".[rag]"
-
-# With MCP server for OpenCode, Claude Desktop, Cursor, Cline
-pip install ".[mcp]"
-
-# Everything
-pip install ".[all]"
-
-# Development
-pip install -e ".[normalize,dev]"
+git clone https://github.com/dy123123/my-wiki.git
+cd my-wiki/llm-wiki
+pip install ".[normalize-full,web]"
 ```
 
-**Requirements:** Python 3.10+
-
-> **Why is markitdown optional?** `markitdown[all]` pulls in heavy ML libraries
-> (speech recognition, Azure cognitive services, image processing) that take a long
-> time to install. The core tool works fine without it — only the `normalize` command
-> needs it, and plain `.txt`/`.md` files are handled natively.
-
-## Quick Start
+### 2. 환경 설정
 
 ```bash
-# 1. Install (with normalization support)
-pip install ".[normalize]"      # basic
-pip install ".[normalize-full]" # + PDF, Office, images, audio
-
-# 2. Copy and fill in your API key
 cp .env.example .env
-$EDITOR .env
+```
 
-# 3. Initialize a vault in ./vault/
+`.env` 파일에서 LLM 설정:
+
+```bash
+# LLM (MiniMax, OpenAI, Ollama 등 OpenAI 호환 API)
+LLM_WIKI_LLM_BASE_URL=https://api.minimax.com/v1
+LLM_WIKI_LLM_API_KEY=your-api-key
+LLM_WIKI_LLM_MODEL=your-model-name
+
+# 임베딩 (RAG용, 선택사항 — Qwen, nomic 등)
+LLM_WIKI_EMBED_BASE_URL=http://localhost:11434/v1
+LLM_WIKI_EMBED_MODEL=qwen3-embedding
+LLM_WIKI_RERANK_MODEL=qwen3-reranker   # 선택사항
+```
+
+### 3. 초기화
+
+```bash
 llm-wiki init
-
-# 4. Verify LLM connectivity
-llm-wiki llm ping
-
-# 5. Add a source document
-llm-wiki add path/to/paper.pdf --tag ai --tag nlp
-
-# 6. Convert to markdown
-llm-wiki normalize <source-id>
-
-# 7. Analyze and build wiki pages
-llm-wiki ingest <source-id>
-
-# 7. Ask questions
-llm-wiki ask "What is self-attention and why is it useful?"
-
-# 8. Search
-llm-wiki search "transformer attention mechanism"
-
-# 9. Check health
-llm-wiki status
-llm-wiki lint
 ```
 
-## Commands
+### 4. 웹 서버 시작
 
-### `llm-wiki init [--vault PATH] [--dry-run]`
-Initialize a new vault. Creates the full directory structure and seeds schema docs.
-
-### `llm-wiki config show`
-Display current configuration (API key is masked).
-
-### `llm-wiki config validate`
-Validate configuration; exits with code 1 if anything is missing.
-
-### `llm-wiki llm ping`
-Send a test request to the LLM backend and verify it responds.
-
-### `llm-wiki add <path> [--tag TAG]... [--dry-run]`
-Copy a file into `vault/raw/`, generate a source ID, and write a metadata sidecar.
-- Tags can be repeated: `--tag ai --tag nlp`
-- The raw file is made read-only (`chmod 444`) — treat it as immutable
-- Re-adding an identical file is idempotent
-
-### `llm-wiki normalize [source-id] [--all] [--dry-run]`
-Convert a raw source to markdown in `vault/normalized/`.
-- Uses **markitdown** for PDF, Office, HTML, images, audio, and more
-- Falls back to plain text for unsupported formats
-
-### `llm-wiki ingest [source-id] [--latest] [--all] [--dry-run]`
-Analyze the normalized content with the LLM and build/update wiki pages:
-1. Extracts structured analysis (entities, concepts, topics, key points)
-2. Generates a source summary page in `wiki/sources/`
-3. Creates or updates entity, concept, and topic pages
-4. Updates `wiki/index.md`
-5. Appends to `wiki/log.md`
-
-### `llm-wiki process [source-id] [--latest] [--all] [--dry-run]`
-Normalize, ingest, and embed a source in one step (shortcut for running all three commands sequentially).
-Auto-embeds if `LLM_WIKI_EMBED_MODEL` is set.
-
-### `llm-wiki embed [source-id] [--all] [--force] [--dry-run]`
-Chunk and embed normalized sources for RAG retrieval.
-Requires `LLM_WIKI_EMBED_MODEL` to be set. Called automatically by `process` when configured.
-
-### `llm-wiki ask "<question>" [--save] [--no-rag]`
-Answer a question from the wiki + RAG:
-1. Searches wiki pages by keyword relevance (structural knowledge)
-2. If `LLM_WIKI_EMBED_MODEL` is set, retrieves relevant chunks from raw source documents (precise values, specs)
-3. Optionally reranks chunks with `LLM_WIKI_RERANK_MODEL`
-4. Returns an answer with citations and confidence level
-- `--save` writes the answer to `wiki/analyses/`
-- `--no-rag` skips RAG and uses only wiki pages
-
-### `llm-wiki search "<query>"`
-Full-text keyword search across all wiki pages, with scored results and inline snippets.
-
-### `llm-wiki lint [--fix] [--dry-run]`
-Detect structural issues:
-| Category | Severity | Description |
-|----------|----------|-------------|
-| `orphan` | warning | Page not referenced in `index.md` |
-| `dead_link` | error | Relative link points to missing file |
-| `duplicate` | warning | Entity/concept with near-identical slug |
-| `missing_section` | warning | Required section (e.g. `## Sources`) absent |
-| `empty_page` | info | Page with very little content |
-
-`--fix` auto-corrects simple issues (adds orphans to index). Exit code 1 if errors found.
-
-### `llm-wiki status`
-Show vault health: source counts, normalization/ingestion status, recent log entries, and pending actions.
-
-### `llm-wiki log tail [-n N]`
-Show the N most recent log entries (newest first). Default: 20.
-
-### `llm-wiki mcp [--http] [--host HOST] [--port PORT] [--token TOKEN]`
-Start an MCP server that exposes the wiki to AI coding assistants and chat clients.
-
-**Stdio mode** (local — for OpenCode, Claude Desktop, Cursor, Cline on the same machine):
 ```bash
-pip install ".[mcp]"
-llm-wiki mcp
+llm-wiki web --port 7432 --token mysecret
 ```
 
-**HTTP/SSE mode** (remote access from another machine):
-```bash
-llm-wiki mcp --http --port 8080 --token mysecrettoken
-# → SSE endpoint: http://<host>:8080/sse
-# → Health check: http://<host>:8080/health
-```
+브라우저에서 `http://서버IP:7432` 접속 → 토큰 입력 → 완료.
 
-| MCP Tool | Description |
-|----------|-------------|
-| `wiki_ask` | Answer a question using wiki pages + RAG chunks |
-| `wiki_search` | Full-text keyword search across wiki pages |
-| `wiki_page` | Read a specific wiki page by path |
-| `wiki_status` | Show vault stats (sources, pages, embeddings) |
+---
 
-#### OpenCode / Claude Desktop config (stdio)
+## 웹 UI에서 할 수 있는 것
 
-```json
-{
-  "mcpServers": {
-    "my-wiki": {
-      "command": "llm-wiki",
-      "args": ["mcp"]
-    }
-  }
-}
-```
+| 탭 | 기능 |
+|---|---|
+| **Sources** | 파일 드래그&드롭 업로드 → 자동 분석 (normalize + ingest + embed) |
+| **Wiki** | 생성된 위키 페이지 탐색 (디렉토리 트리 + 문서 간 링크) |
+| **Ask** | 위키 + RAG 기반 질문 답변 |
+| **Connect** | OpenCode / Claude Desktop / Cursor MCP 연결 설정 복사 |
 
-#### Remote HTTP/SSE config
+파이프라인 상태는 소스마다 배지로 표시:
+- **N** — Normalized (마크다운 변환 완료)
+- **I** — Ingested (위키 페이지 생성 완료)
+- **E** — Embedded (RAG 인덱스 완료)
+
+---
+
+## OpenCode / Claude Desktop MCP 연결
+
+웹 UI의 **Connect** 탭에서 설정을 자동 생성해줌. 직접 설정하려면:
 
 ```json
 {
   "mcpServers": {
     "my-wiki": {
       "type": "sse",
-      "url": "http://<server>:8080/sse",
-      "headers": {"Authorization": "Bearer mysecrettoken"}
+      "url": "http://서버IP:7432/mcp/sse",
+      "headers": { "Authorization": "Bearer mysecret" }
     }
   }
 }
 ```
 
-## Configuration
+연결하면 AI가 자동으로 `wiki_ask`, `wiki_search`, `wiki_page`, `wiki_status` 툴을 사용합니다.
 
-All settings are read from environment variables (prefixed `LLM_WIKI_`) or a `.env` file:
+---
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LLM_WIKI_LLM_BASE_URL` | `https://api.openai.com/v1` | API base URL |
-| `LLM_WIKI_LLM_API_KEY` | _(required)_ | API key |
-| `LLM_WIKI_LLM_MODEL` | `gpt-4o-mini` | Model name |
-| `LLM_WIKI_LLM_TEMPERATURE` | `0.2` | Sampling temperature |
-| `LLM_WIKI_LLM_MAX_TOKENS` | `4096` | Max tokens per completion |
-| `LLM_WIKI_VAULT_PATH` | `vault` | Vault directory |
-| `LLM_WIKI_DRY_RUN` | `false` | Global dry-run flag |
-| `LLM_WIKI_VERBOSE` | `false` | Verbose output |
+## CLI 사용법 (선택사항)
 
-### RAG (Embedding + Reranking)
-
-To enable RAG for precise document lookup (register addresses, spec values, etc.):
+웹 UI 대신 CLI로도 사용 가능:
 
 ```bash
-# .env
-LLM_WIKI_EMBED_MODEL=qwen3-embedding          # or nomic-embed-text, text-embedding-ada-002, etc.
-LLM_WIKI_EMBED_BASE_URL=http://localhost:11434/v1  # defaults to llm_base_url if empty
-LLM_WIKI_RERANK_MODEL=qwen3-reranker          # optional — leave empty for cosine similarity only
-LLM_WIKI_CHUNK_SIZE=800                       # chars per chunk (default)
-LLM_WIKI_CHUNK_OVERLAP=150                    # overlap (default)
-LLM_WIKI_RAG_TOP_K=5                          # chunks per query (default)
+# 문서 추가 + 한번에 처리
+llm-wiki add paper.pdf
+llm-wiki process --latest        # normalize + ingest + embed
+
+# 질문
+llm-wiki ask "UART TX 레지스터 주소는?"
+
+# 검색
+llm-wiki search "register address"
+
+# 상태 확인
+llm-wiki status
 ```
 
-Once configured, `llm-wiki process` auto-embeds and `llm-wiki ask` uses both wiki + RAG:
+---
 
-```bash
-llm-wiki add hardware-manual.pdf
-llm-wiki process --latest     # normalize + ingest + embed (all in one)
-llm-wiki ask "UART TX register address"
-```
+## 주요 환경변수
 
-Or embed separately after ingestion:
+| 변수 | 설명 |
+|---|---|
+| `LLM_WIKI_LLM_BASE_URL` | LLM API 주소 (기본: OpenAI) |
+| `LLM_WIKI_LLM_API_KEY` | API 키 |
+| `LLM_WIKI_LLM_MODEL` | 모델명 |
+| `LLM_WIKI_LLM_MAX_TOKENS` | 최대 토큰 수 (기본: 4096) |
+| `LLM_WIKI_EMBED_MODEL` | 임베딩 모델 (비워두면 RAG 비활성화) |
+| `LLM_WIKI_EMBED_BASE_URL` | 임베딩 API 주소 (비워두면 LLM 주소 사용) |
+| `LLM_WIKI_RERANK_MODEL` | 리랭크 모델 (선택사항) |
+| `LLM_WIKI_CHUNK_SIZE` | RAG 청크 크기 (기본: 800자) |
+| `LLM_WIKI_VAULT_PATH` | 볼트 경로 (기본: `./vault`) |
 
-```bash
-llm-wiki embed --all          # embed all normalized sources
-llm-wiki embed <source-id>    # embed a specific source
-llm-wiki embed --all --force  # re-embed (e.g. after changing chunk_size)
-```
+`.env.example` 파일에 전체 옵션 있음.
 
-#### How `ask` uses wiki + RAG
+---
 
-```
-Question
-  │
-  ├─ Wiki keyword search → summary pages (concepts, entities, topics)
-  │                        → structural understanding
-  │
-  └─ RAG embedding search → raw document chunks
-      └─ optional rerank  → precise values (register addresses, specs)
-                          → combined context → LLM answer
-```
-
-### Using a local LLM (Ollama)
-
-```bash
-LLM_WIKI_LLM_BASE_URL=http://localhost:11434/v1
-LLM_WIKI_LLM_API_KEY=ollama
-LLM_WIKI_LLM_MODEL=llama3.1
-```
-
-### Using LM Studio
-
-```bash
-LLM_WIKI_LLM_BASE_URL=http://localhost:1234/v1
-LLM_WIKI_LLM_API_KEY=lm-studio
-LLM_WIKI_LLM_MODEL=your-model-name
-```
-
-## Vault Structure
+## 볼트 구조
 
 ```
 vault/
-├── raw/                          # Immutable source files
-│   ├── {source-id}.{ext}
-│   └── {source-id}.meta.json     # Metadata sidecar
-├── normalized/                   # Markitdown output
-│   └── {source-id}.md
-├── chunks/                       # RAG: chunked text (JSON)
-│   └── {source-id}.json
-├── embeddings/                   # RAG: embedding vectors (JSON)
-│   └── {source-id}.json
-├── wiki/
-│   ├── index.md                  # Master table of contents
-│   ├── log.md                    # Activity log
-│   ├── overview.md               # Wiki summary
-│   ├── sources/                  # Source summary pages
-│   ├── entities/                 # People, orgs, products, places
-│   ├── concepts/                 # Technical terms, methods
-│   ├── topics/                   # Broad subject areas
-│   ├── analyses/                 # Saved Q&A answers
-│   └── reports/                  # Custom reports
-└── schema/
-    ├── AGENTS.md                 # LLM behavior instructions
-    ├── wiki_schema.md            # Data schemas
-    └── page_conventions.md      # Markdown formatting rules
+├── raw/          # 업로드된 원본 파일 (읽기 전용)
+├── normalized/   # 마크다운으로 변환된 파일
+├── chunks/       # RAG 청크 텍스트
+├── embeddings/   # RAG 임베딩 벡터
+└── wiki/
+    ├── sources/  # 소스별 요약 페이지
+    ├── entities/ # 인물, 조직, 제품
+    ├── concepts/ # 기술 개념
+    ├── topics/   # 주제
+    └── analyses/ # 저장된 Q&A
 ```
-
-## Sample Vault
-
-The `sample_vault/` directory contains two mock source documents and the default schema files. To try them:
-
-```bash
-llm-wiki init
-llm-wiki add sample_vault/raw/intro-to-transformers-mock.md --tag nlp --tag transformers
-llm-wiki add sample_vault/raw/llm-scaling-laws-mock.txt --tag llm --tag scaling
-llm-wiki normalize --all
-llm-wiki ingest --all
-llm-wiki ask "What are the key advantages of self-attention over recurrent layers?"
-llm-wiki search "scaling laws"
-llm-wiki status
-llm-wiki lint
-```
-
-## Running Tests
-
-```bash
-pip install -e ".[dev]"
-pytest
-```
-
-Tests use mocked LLM responses and temporary vaults — no API key required.
-
-## Project Structure
-
-```
-llm_wiki/
-├── cli.py              # Typer CLI app
-├── config.py           # pydantic-settings configuration
-├── llm.py              # LLM abstraction (OpenAI-compatible)
-├── vault.py            # Vault operations
-├── embedder.py         # Embedding client (OpenAI-compatible)
-├── rag.py              # RAG index: chunking, vector search, reranking
-├── schemas/
-│   └── models.py       # Pydantic models for structured outputs
-└── commands/
-    ├── init_cmd.py
-    ├── config_cmd.py
-    ├── add_cmd.py
-    ├── normalize_cmd.py
-    ├── ingest_cmd.py
-    ├── embed_cmd.py
-    ├── ask_cmd.py
-    ├── search_cmd.py
-    ├── lint_cmd.py
-    ├── status_cmd.py
-    ├── log_cmd.py
-    └── mcp_cmd.py
-```
-
-## Design Notes
-
-- **Source IDs** are `{filename-slug}-{8-char-sha256}` — stable, unique, and human-readable
-- **LLM calls use JSON mode** — structured outputs via `response_format: {type: json_object}`
-- **Ingest is idempotent** — re-running updates pages rather than creating duplicates
-- **Schema docs** are loaded into every LLM system prompt as behavioral constraints
-- **Large documents are truncated** to 60K characters before LLM processing
-- **Retry with backoff** on rate limits and transient server errors
