@@ -230,6 +230,11 @@ def run(
         background_tasks.add_task(_run_step, "embed", source_id, vault, settings, llm, embedder, rag_index, task_id)
         return {"task_id": task_id}
 
+    @app.get("/api/tasks")
+    def list_tasks():
+        with _tasks_lock:
+            return {"tasks": list(_tasks.values())}
+
     @app.get("/api/tasks/{task_id}")
     def get_task(task_id: str):
         with _tasks_lock:
@@ -251,6 +256,33 @@ def run(
             rel = str(p.relative_to(vault.wiki))
             pages.append({"path": rel, "size": p.stat().st_size})
         return {"pages": pages}
+
+    @app.get("/api/wiki/search")
+    def search_wiki(q: str = ""):
+        if not q or not vault.wiki.exists():
+            return {"results": []}
+        import re
+        terms = re.findall(r"\w+", q.lower())
+        if not terms:
+            return {"results": []}
+        pattern = re.compile("|".join(re.escape(t) for t in terms), re.IGNORECASE)
+        results = []
+        for p in sorted(vault.wiki.rglob("*.md")):
+            try:
+                content = p.read_text(encoding="utf-8")
+                matches = list(pattern.finditer(content))
+                if matches:
+                    m = matches[0]
+                    snippet = content[max(0, m.start()-80):m.end()+120].replace("\n", " ").strip()
+                    results.append({
+                        "path": str(p.relative_to(vault.wiki)),
+                        "count": len(matches),
+                        "snippet": snippet,
+                    })
+            except Exception:
+                pass
+        results.sort(key=lambda x: -x["count"])
+        return {"results": results[:30]}
 
     @app.get("/api/wiki/{page_path:path}")
     def get_wiki_page(page_path: str):
@@ -641,13 +673,21 @@ def _ui_html(settings: Settings, port: int) -> str:
 
 <!-- Wiki -->
 <div id="pane-wiki" class="p-5 hidden">
+  <div class="flex gap-2 mb-4">
+    <input id="wiki-search-input" type="text" placeholder="키워드 검색…"
+      class="flex-1 bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm focus:border-blue-500 outline-none"
+      onkeydown="if(event.key==='Enter')doWikiSearch()">
+    <button onclick="doWikiSearch()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm">Search</button>
+    <button onclick="clearWikiSearch()" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm text-gray-400">Clear</button>
+  </div>
+  <div id="wiki-search-results" class="hidden mb-4"></div>
   <div class="flex gap-4">
-    <div class="w-56 flex-shrink-0 overflow-y-auto max-h-screen">
+    <div class="w-56 flex-shrink-0 overflow-y-auto" style="max-height:80vh">
       <div id="wiki-tree" class="text-xs text-gray-400"></div>
     </div>
     <div class="flex-1">
       <p class="text-gray-500 text-xs mb-2" id="wiki-page-path"></p>
-      <pre id="wiki-content" class="text-xs text-gray-300 bg-gray-900 rounded p-4 max-h-screen overflow-y-auto"></pre>
+      <pre id="wiki-content" class="text-xs text-gray-300 bg-gray-900 rounded p-4 overflow-y-auto" style="max-height:80vh"></pre>
     </div>
   </div>
 </div>
@@ -903,7 +943,38 @@ function handleDrop(ev) {
   uploadFiles(ev.dataTransfer.files);
 }
 
-// ── Wiki ──────────────────────────────────────────────────────────────────
+// ── Wiki search ───────────────────────────────────────────────────────────
+async function doWikiSearch() {
+  const q = document.getElementById('wiki-search-input').value.trim();
+  if (!q) return;
+  const el = document.getElementById('wiki-search-results');
+  el.classList.remove('hidden');
+  el.innerHTML = '<p class="text-gray-500 text-xs">Searching…</p>';
+  const r = await apiFetch(API+'/api/wiki/search?q='+encodeURIComponent(q));
+  const {results} = await r.json();
+  if (!results.length) {
+    el.innerHTML = '<p class="text-gray-500 text-xs">No results for "'+q+'"</p>';
+    return;
+  }
+  el.innerHTML = '<div class="space-y-2">' + results.map(res => `
+    <div class="bg-gray-900 rounded p-3 cursor-pointer hover:bg-gray-800 border border-gray-800"
+         onclick="loadWikiPage('${res.path}');clearWikiSearch()">
+      <div class="flex items-center justify-between mb-1">
+        <span class="text-blue-400 text-xs font-semibold">${res.path.replace('.md','')}</span>
+        <span class="text-gray-600 text-xs">${res.count} hits</span>
+      </div>
+      <p class="text-gray-400 text-xs truncate">…${res.snippet}…</p>
+    </div>`).join('') + '</div>';
+}
+
+function clearWikiSearch() {
+  document.getElementById('wiki-search-input').value = '';
+  const el = document.getElementById('wiki-search-results');
+  el.classList.add('hidden');
+  el.innerHTML = '';
+}
+
+// ── Wiki tree ─────────────────────────────────────────────────────────────
 let _currentPageDir = '';
 
 async function loadWikiTree() {
@@ -1038,6 +1109,16 @@ async function appInit() {
     document.getElementById('vault-path').textContent = d.vault || '';
   } catch(e) {}
   try { await loadSources(); } catch(e) {}
+  // Restore any running tasks (e.g. embed started before page load)
+  try {
+    const r = await apiFetch(API+'/api/tasks');
+    const {tasks} = await r.json();
+    for (const t of tasks) {
+      if (t.status === 'running') {
+        pollTask(t.task_id, t.source_id);
+      }
+    }
+  } catch(e) {}
   refreshMcpStatus();
   setInterval(refreshMcpStatus, 5000);
 }
